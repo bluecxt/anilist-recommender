@@ -1,9 +1,10 @@
 # anilist-recommender
 
-Agent local en ligne de commande qui recommande des **animés** et des **mangas**
-à partir de ton profil AniList (notes, statuts, favoris), du **graphe collaboratif
-de recommandations** d'AniList et d'une **recherche vectorielle locale**. La
-synthèse finale est produite par un **LLM local (Ollama)** via *tool calling* strict.
+Agent local en ligne de commande qui recommande des **animés, mangas, light novels,
+manhwas et manhuas** à partir de ton profil AniList (notes, statuts, favoris), du
+**graphe collaboratif de recommandations**, du **graphe relationnel** (suites, OAV,
+films, adaptations anime↔manga/LN) et d'une **recherche vectorielle locale**. La
+synthèse est produite par un **LLM local (Ollama)** via *tool calling* strict.
 
 > Stack minimale : `httpx` · `sqlite3` + `sqlite-vec` · `sentence-transformers` (CPU)
 > · `pydantic` + `openai` · `typer` + `rich`. **Aucun** LangChain / LlamaIndex / ChromaDB.
@@ -45,16 +46,19 @@ wheels *manylinux* de `torch` et `sqlite-vec` se chargent sur NixOS. Les
 ```bash
 uv run anilist-rec --help
 
-# 1. Synchroniser un profil (username lu depuis config.toml si présent)
+# 1. Synchroniser (anime + manga/LN/manhwa, graphe relationnel, embeddings CPU)
 uv run anilist-rec sync
 
-# 2. Afficher le résumé analytique du profil + les reco latentes au plus fort GraphScore
+# 2. Résumé analytique (stats Anime vs Manga/LN, top tags, anti-tags, top latent)
 uv run anilist-rec profile
 
-# 3. Une requête ponctuelle
-uv run anilist-rec ask "Conseille-moi un anime psychologique de moins de 25 épisodes, dans ma planning list ou proche de mes favoris"
+# 3. Audit des suites / OAV / films / spin-offs non vus (sans LLM)
+uv run anilist-rec sequels --media ANIME --type ALL --limit 30
 
-# 4. Mode conversationnel (garde l'historique pour affiner)
+# 4. Requête ponctuelle via le LLM (3 outils : recherche / suites / adaptations)
+uv run anilist-rec ask "Conseille-moi un anime psychologique de moins de 25 épisodes"
+
+# 5. Mode conversationnel
 uv run anilist-rec chat
 ```
 
@@ -132,20 +136,20 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 
 ## Comment ça marche
 
-1. **Extraction** (`graphql_client.py`) — `User` (stats `meanScore` / `standardDeviation`,
-   favoris) + `MediaListCollection` paginé par `chunk`/`perChunk`, avec backoff
-   exponentiel sur HTTP 429 (`Retry-After`).
-2. **Pondération** (`scoring.py`) — `affinity_weight` déterministe par œuvre :
-   Z-score `(score − μ) / σ` (plancher `σ = 10`), règles conditionnelles par statut
-   (`COMPLETED` / `CURRENT` / `REPEATING` / `PAUSED` / `DROPPED`), bonus favoris `+2.0`.
-3. **Graphe collaboratif** — `GraphScore(X) = Σₛ Poids(s)·ln(1 + max(0, rating s→X))`
-   pour chaque candidat (`PLANNING` + découvertes), avec `positive_sources`
-   (ponts depuis les œuvres aimées) et `negative_warnings` (ponts depuis les drops).
-4. **Recherche hybride** (`db.py` + `embeddings.py`) — filtres durs SQL + similarité
-   cosinus `sqlite-vec` :
-   `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
-5. **Agent** (`agent.py`) — tool calling vers `search_candidates`, profil injecté dans
-   le prompt système, interdiction d'inventer des titres hors candidats.
+1. **Extraction** (`graphql_client.py`) — `User` + `MediaListCollection` (anime **et**
+   manga/LN/manhwa) paginé par `chunk`/`perChunk`, `countryOfOrigin`/`format`/`duration`,
+   recommandations collaboratives **et** graphe `relations` (`relationType(version: 2)`)
+   tirés par lots via `Page(id_in:)`, backoff 429.
+2. **Pondération** (`scoring.py`) — `affinity_weight` par œuvre (Z-score par média,
+   anime vs manga), ratio de progression unifié (épisodes / chapitres / tomes / seuil 20).
+3. **Graphe collaboratif + relationnel** — `GraphScore` par candidat, puis **Prequel
+   Gatekeeping** : une saison 2/3 dont le préquel n'est pas terminé est retirée et son
+   score est **transféré** vers la racine.
+4. **Recherche hybride** (`db.py` + `embeddings.py`) — filtres SQL (catégorie, longueur,
+   pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
+5. **Agent** (`agent.py`) — 3 outils (`search_new_recommendations`,
+   `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`,
+   sortie dynamique (analyse détaillée ≤ 5, tableau complet au-delà).
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 
@@ -169,9 +173,9 @@ anilist-recommender/
 └── src/anilist_recommender/
     ├── config.py              # chemins, URL Ollama, modèle LLM, réglages
     ├── graphql_client.py      # extraction AniList + rate-limit
-    ├── db.py                  # schéma SQLite + sqlite-vec + requêtes hybrides
-    ├── scoring.py             # Z-scores, GraphScore, taste_profile.json
+    ├── db.py                  # schéma SQLite + media_relations + sqlite-vec + requêtes
+    ├── scoring.py             # Z-scores, GraphScore, gatekeeping, taste_profile.json
     ├── embeddings.py          # vectorisation CPU + cosinus sqlite-vec
-    ├── agent.py               # agent LLM (tool calling) + synthèse
-    └── cli.py                 # commandes sync / profile / ask / chat
+    ├── agent.py               # agent LLM (3 outils) + synthèse
+    └── cli.py                 # commandes sync / profile / sequels / ask / chat
 ```

@@ -1,10 +1,9 @@
-"""Local LLM agent: strict tool-calling against SQLite + profile injection.
+"""Local LLM agent — V2 multi-tool (search / franchise / cross-media).
 
-Uses the official `openai` SDK pointed at Ollama's OpenAI-compatible endpoint.
-The only tool exposed to the model is ``search_candidates``, which runs the
-hybrid ranking (hard SQL filters + cosine similarity + GraphScore) in Python
-and returns pre-digested candidates — the model is forbidden from inventing
-anything outside that set.
+Uses the official `openai` SDK pointed at Ollama. Three specialized tools are
+exposed; each returns pre-digested rows and the model is forbidden from inventing
+anything outside them. Output size is dynamic: detailed per-title analysis for
+<=5 results, a full Markdown table/list for larger audits.
 """
 
 from __future__ import annotations
@@ -18,81 +17,108 @@ from . import db as db_module
 from . import embeddings as embeddings_module
 from .config import Settings
 
-MAX_TOOL_ROUNDS = 6
+MAX_TOOL_ROUNDS = 8
 
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "search_candidates",
+            "name": "search_new_recommendations",
             "description": (
-                "Search the local candidate database (the user's PLANNING list plus "
-                "collaborative-graph discoveries) and return ranked recommendations. "
-                "Use this for ANY recommendation request; never recommend a title "
-                "that is not in the returned list."
+                "Search the local candidate database for NEW anime/manga/LN/manhwa to "
+                "watch or read (planning list + collaborative-graph discoveries), ranked "
+                "by GraphScore + semantic similarity + planning bonus. Use for any "
+                "'recommend me something new' request."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "media_type": {
+                    "category": {
                         "type": "string",
-                        "enum": ["ANIME", "MANGA"],
-                        "description": "Restrict to anime or manga.",
+                        "enum": ["ANIME", "MANGA", "LIGHT_NOVEL", "MANHWA", "ONE_SHOT", "ANY_PRINT"],
+                        "description": "Media category. MANHWA covers Korean manhwa + Chinese manhua.",
                     },
-                    "min_episodes": {
-                        "type": "integer",
-                        "description": "Minimum episode count (anime only).",
+                    "include_movies_or_ovas": {
+                        "type": "boolean",
+                        "description": "For ANIME: also allow MOVIE/OVA/SPECIAL and drop the >=3 episodes rule.",
                     },
-                    "max_episodes": {
-                        "type": "integer",
-                        "description": "Maximum episode count (anime only).",
-                    },
-                    "min_chapters": {
-                        "type": "integer",
-                        "description": "Minimum chapter count (manga only).",
-                    },
-                    "max_chapters": {
-                        "type": "integer",
-                        "description": "Maximum chapter count (manga only).",
-                    },
+                    "min_length": {"type": "integer", "description": "Min episodes (anime) / chapters (print)."},
+                    "max_length": {"type": "integer", "description": "Max episodes (anime) / chapters (print)."},
+                    "max_volumes": {"type": "integer", "description": "Max volumes (manga/LN only)."},
                     "source_pool": {
                         "type": "string",
                         "enum": ["PLANNING_ONLY", "DISCOVERY_ONLY", "BOTH"],
-                        "description": (
-                            "PLANNING_ONLY = only titles already on the user's planning list; "
-                            "DISCOVERY_ONLY = only collaborative-graph discoveries; BOTH = both."
-                        ),
+                        "description": "Restrict to planning list, graph discoveries, or both.",
                     },
-                    "required_genres_or_tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Candidate must contain at least one of these genres/tags "
-                            "(English AniList names, e.g. 'Psychological', 'Thriller')."
-                        ),
+                    "only_finished": {
+                        "type": "boolean",
+                        "description": "Only fully published (FINISHED) titles — useful for manga/LN.",
                     },
-                    "excluded_genres_or_tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Exclude candidates containing any of these genres/tags.",
-                    },
-                    "semantic_query": {
-                        "type": "string",
-                        "description": (
-                            "Rich English description of the desired mood, protagonist type or "
-                            "themes for the vector search (e.g. 'cerebral cat-and-mouse thriller "
-                            "with a morally grey protagonist')."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Number of candidates to return (default 10).",
-                    },
+                    "required_genres_or_tags": {"type": "array", "items": {"type": "string"}},
+                    "excluded_genres_or_tags": {"type": "array", "items": {"type": "string"}},
+                    "semantic_query": {"type": "string", "description": "English mood/theme description for vector search."},
+                    "limit": {"type": "integer", "description": "Number of results (default 5, up to 30)."},
                 },
-                "required": ["media_type"],
+                "required": ["category"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_unseen_franchise_entries",
+            "description": (
+                "Find sequels, OVAs, movies, side-stories and spin-offs of works the user "
+                "already watched/read but whose follow-ups they have NOT completed. Use for "
+                "'what sequels/OVAs/films am I missing?' audits."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source_type": {"type": "string", "enum": ["ANIME", "MANGA", "BOTH"]},
+                    "relation_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Relation types: SEQUEL, SIDE_STORY, SPIN_OFF, ADAPTATION, SOURCE…",
+                    },
+                    "target_formats": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter target formats, e.g. [\"OVA\",\"SPECIAL\",\"MOVIE\"] or [\"TV\"].",
+                    },
+                    "min_parent_score": {
+                        "type": "integer",
+                        "description": "Only from works the user scored >= this (0-100).",
+                    },
+                    "include_unreleased": {"type": "boolean", "description": "Include NOT_YET_RELEASED entries."},
+                    "limit": {"type": "integer", "description": "Max results (default 25, up to 50)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_cross_media_adaptations",
+            "description": (
+                "Bridge anime <-> print. ANIME_TO_PRINT: animes the user finished/liked that "
+                "have an original manga/LN to read the rest. PRINT_TO_ANIME: manga/LN the user "
+                "read that have an anime adaptation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "enum": ["ANIME_TO_PRINT", "PRINT_TO_ANIME"]},
+                    "target_print_format": {"type": "string", "enum": ["ANY", "MANGA", "NOVEL"]},
+                    "min_user_score": {"type": "integer", "description": "Only works the user scored >= this (default 75)."},
+                    "only_finished_target": {"type": "boolean", "description": "Only fully published targets."},
+                    "limit": {"type": "integer", "description": "Max results (default 15, up to 40)."},
+                },
+                "required": ["direction"],
+            },
+        },
+    },
 ]
 
 
@@ -109,17 +135,26 @@ def load_profile(settings: Settings) -> dict[str, Any]:
 def build_system_prompt(profile: dict[str, Any]) -> str:
     profile_json = json.dumps(profile, ensure_ascii=False)
     return (
-        "You are a rigorous, clinical anime & manga recommendation engine running fully "
-        "offline. You reason only from the local candidate database and the taste profile "
-        "injected below.\n\n"
+        "You are a rigorous, clinical anime/manga/light-novel/manhwa recommendation engine "
+        "running fully offline. You reason only from the local database and the taste profile "
+        "below, across every medium: TV, movies, OVAs, manga, light novels, Korean manhwa and "
+        "Chinese manhua.\n\n"
+        "TOOLS:\n"
+        "- search_new_recommendations: discover NEW titles (planning + graph).\n"
+        "- find_unseen_franchise_entries: sequels/OVAs/movies/side-stories/spin-offs the user "
+        "has not finished yet.\n"
+        "- find_cross_media_adaptations: bridge anime <-> manga/LN (source/adaptation).\n\n"
         "STRICT RULES:\n"
-        "1. Never invent a title. Recommend ONLY works returned by search_candidates.\n"
-        "2. Give 3 to 5 recommendations. For each: justify WHY it fits by citing "
-        "positive_sources (the graph bridges from works the user loved), state the length, "
-        "and honestly flag any negative_warnings (bridges from dropped/hated works).\n"
-        "3. Be direct, analytical, zero filler. No marketing tone.\n"
+        "1. Never invent a title — recommend ONLY what a tool returns.\n"
+        "2. OUTPUT SIZE (critical):\n"
+        "   - <=5 results: analyze each one in depth — cite graph_score, positive_sources "
+        "(with ratings and the user's weights), negative_warnings, exact format "
+        "(TV/MOVIE/OVA/MANGA/NOVEL/KR-manhwa/CN-manhua) and length (episodes/chapters/volumes).\n"
+        "   - >5 results: produce a FULL Markdown table or a condensed exhaustive list. Never "
+        "truncate to a handful of items — the user asked for a complete audit.\n"
+        "3. Be direct, analytical, zero filler.\n"
         "4. Answer in the language the user wrote in.\n"
-        "5. If search_candidates returns nothing, say so plainly and suggest looser filters.\n\n"
+        "5. If a tool returns nothing, say so plainly and suggest looser filters.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
 
@@ -128,8 +163,9 @@ def _length_label(media: dict[str, Any]) -> str:
     if media.get("type") == "ANIME":
         episodes = media.get("episodes")
         return f"{episodes} eps" if episodes else "? eps"
-    chapters = media.get("chapters")
-    return f"{chapters} chap" if chapters else "? chap"
+    chapters = media.get("chapters") or media.get("volumes")
+    unit = "chap" if media.get("chapters") else "vol"
+    return f"{chapters} {unit}" if chapters else "? length"
 
 
 def rank_candidates(
@@ -137,14 +173,8 @@ def rank_candidates(
     similarities: dict[int, float],
     has_query: bool,
 ) -> list[dict[str, Any]]:
-    """FinalScore = Norm(GraphScore)*0.55 + Sim*0.35 + PlanningBonus*0.10.
-
-    When no semantic query is supplied, the weights are renormalised to
-    GraphScore (0.85) and PlanningBonus (0.15).
-    """
     if not rows:
         return []
-
     scores = [row["graph_score"] or 0.0 for row in rows]
     gmin, gmax = min(scores), max(scores)
     span = gmax - gmin
@@ -159,11 +189,9 @@ def rank_candidates(
         graph_norm = norm(row["graph_score"] or 0.0)
         similarity = similarities.get(row["media_id"], 0.0)
         planning = row["planning_bonus"] or 0.0
-        if has_query:
-            final = graph_norm * 0.55 + similarity * 0.35 + planning * 0.10
-        else:
-            final = graph_norm * 0.85 + planning * 0.15
-
+        final = graph_norm * 0.55 + similarity * 0.35 + planning * 0.10 if has_query else (
+            graph_norm * 0.85 + planning * 0.15
+        )
         ranked.append(
             {
                 "title": row["title_romaji"] or row["title_english"] or f"#{row['media_id']}",
@@ -171,7 +199,11 @@ def rank_candidates(
                 "title_english": row["title_english"],
                 "type": row["type"],
                 "format": row["format"],
+                "country": row["country_of_origin"],
                 "length": _length_label(row),
+                "episodes": row["episodes"],
+                "chapters": row["chapters"],
+                "volumes": row["volumes"],
                 "average_score": row["average_score"],
                 "status": "IN_PLANNING" if planning > 0 else "DISCOVERY",
                 "graph_score": round(row["graph_score"] or 0.0, 3),
@@ -181,39 +213,110 @@ def rank_candidates(
                 "negative_warnings": row["negative_warnings"],
             }
         )
-
     ranked.sort(key=lambda item: -item["final_score"])
     return ranked
 
 
-def execute_search(args: dict[str, Any], settings: Settings) -> list[dict[str, Any]]:
-    """The tool implementation: hard filters → semantic sim → hybrid rank."""
+def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
+    try:
+        limit = int(args.get("limit") or default)
+    except (TypeError, ValueError):
+        limit = default
+    return max(1, min(limit, maximum))
+
+
+def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[str, Any]]:
+    rows = db_module.search_new_recommendations(
+        db,
+        category=args.get("category") or "ANIME",
+        include_movies_or_ovas=bool(args.get("include_movies_or_ovas")),
+        min_length=args.get("min_length"),
+        max_length=args.get("max_length"),
+        max_volumes=args.get("max_volumes"),
+        source_pool=args.get("source_pool") or "BOTH",
+        only_finished=bool(args.get("only_finished")),
+        required=args.get("required_genres_or_tags"),
+        excluded=args.get("excluded_genres_or_tags"),
+        limit=_clamp_limit(args, 10, 30),
+    )
+    query = (args.get("semantic_query") or "").strip()
+    has_query = bool(query)
+    similarities: dict[int, float] = {}
+    if has_query:
+        ids = [row["media_id"] for row in rows]
+        similarities = embeddings_module.query_similarities(db, query, ids, settings)
+    return rank_candidates(rows, similarities, has_query)
+
+
+def _franchise(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
+    rows = db_module.find_unseen_franchise_entries(
+        db,
+        source_type=args.get("source_type") or "ANIME",
+        relation_types=args.get("relation_types") or ["SEQUEL", "SIDE_STORY"],
+        target_formats=args.get("target_formats"),
+        min_parent_score=int(args.get("min_parent_score") or 0),
+        include_unreleased=bool(args.get("include_unreleased")),
+        limit=_clamp_limit(args, 25, 50),
+    )
+    return [
+        {
+            "source_title": r.get("source_title_romaji") or r.get("source_title_english"),
+            "source_format": r.get("source_format"),
+            "my_score": r.get("parent_score"),
+            "my_affinity": round(r.get("parent_weight") or 0.0, 2),
+            "relation_type": r.get("relation_type"),
+            "target_title": r.get("target_title"),
+            "target_type": r.get("target_type"),
+            "target_format": r.get("target_format"),
+            "target_country": r.get("target_country"),
+            "target_status": r.get("target_status"),
+            "target_episodes": r.get("target_episodes"),
+            "target_chapters": r.get("target_chapters"),
+            "target_volumes": r.get("target_volumes"),
+            "target_score": r.get("target_score"),
+        }
+        for r in rows
+    ]
+
+
+def _adaptations(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
+    rows = db_module.find_cross_media_adaptations(
+        db,
+        direction=args.get("direction") or "ANIME_TO_PRINT",
+        target_print_format=args.get("target_print_format") or "ANY",
+        min_user_score=int(args.get("min_user_score") or 75),
+        only_finished_target=bool(args.get("only_finished_target")),
+        limit=_clamp_limit(args, 15, 40),
+    )
+    return [
+        {
+            "source_title": r.get("source_title_romaji") or r.get("source_title_english"),
+            "source_format": r.get("source_format"),
+            "my_score": r.get("parent_score"),
+            "my_affinity": round(r.get("parent_weight") or 0.0, 2),
+            "relation_type": r.get("relation_type"),
+            "target_title": r.get("target_title"),
+            "target_format": r.get("target_format"),
+            "target_status": r.get("target_status"),
+            "target_episodes": r.get("target_episodes"),
+            "target_chapters": r.get("target_chapters"),
+            "target_volumes": r.get("target_volumes"),
+            "target_score": r.get("target_score"),
+        }
+        for r in rows
+    ]
+
+
+def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> list[dict[str, Any]]:
     connection = db_module.connect(settings.db_path)
     try:
-        rows = db_module.search_candidates(
-            connection,
-            media_type=args.get("media_type"),
-            min_episodes=args.get("min_episodes"),
-            max_episodes=args.get("max_episodes"),
-            min_chapters=args.get("min_chapters"),
-            max_chapters=args.get("max_chapters"),
-            source_pool=args.get("source_pool") or "BOTH",
-            required=args.get("required_genres_or_tags"),
-            excluded=args.get("excluded_genres_or_tags"),
-        )
-        query = (args.get("semantic_query") or "").strip()
-        has_query = bool(query)
-        similarities: dict[int, float] = {}
-        if has_query:
-            ids = [row["media_id"] for row in rows]
-            similarities = embeddings_module.query_similarities(connection, query, ids, settings)
-
-        ranked = rank_candidates(rows, similarities, has_query)
-        try:
-            limit = max(1, int(args.get("limit") or 10))
-        except (TypeError, ValueError):
-            limit = 10
-        return ranked[:limit]
+        if name == "search_new_recommendations":
+            return _search_new(args, connection, settings)
+        if name == "find_unseen_franchise_entries":
+            return _franchise(args, connection)
+        if name == "find_cross_media_adaptations":
+            return _adaptations(args, connection)
+        return [{"error": f"unknown tool: {name}"}]
     finally:
         connection.close()
 
@@ -224,10 +327,8 @@ def run_agent(
     history: list[dict[str, Any]] | None = None,
     on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> str:
-    """One turn of the agent loop, resolving tool calls until a final answer."""
     client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=180.0)
-    profile = load_profile(settings)
-    system_prompt = build_system_prompt(profile)
+    system_prompt = build_system_prompt(load_profile(settings))
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     if history:
@@ -239,7 +340,7 @@ def run_agent(
             model=settings.ollama_model,
             messages=messages,
             tools=TOOLS,
-            temperature=0.3,
+            extra_body={"options": {"num_ctx": 8192, "temperature": 0.2}},
         )
         message = response.choices[0].message
 
@@ -252,15 +353,10 @@ def run_agent(
                 {
                     "id": getattr(call, "id", None) or f"call_{index}",
                     "type": "function",
-                    "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments,
-                    },
+                    "function": {"name": call.function.name, "arguments": call.function.arguments},
                 }
             )
-        messages.append(
-            {"role": "assistant", "content": message.content or "", "tool_calls": tool_calls}
-        )
+        messages.append({"role": "assistant", "content": message.content or "", "tool_calls": tool_calls})
 
         for index, call in enumerate(message.tool_calls):
             try:
@@ -269,7 +365,7 @@ def run_agent(
                 args = {}
             if on_tool_call is not None:
                 on_tool_call(call.function.name, args)
-            result = execute_search(args, settings)
+            result = execute_tool(call.function.name, args, settings)
             messages.append(
                 {
                     "role": "tool",

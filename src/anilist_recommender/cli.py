@@ -1,4 +1,4 @@
-"""Typer + rich CLI: sync, profile, ask, chat."""
+"""Typer + rich CLI (V2): sync, profile, sequels, ask, chat."""
 
 from __future__ import annotations
 
@@ -28,10 +28,17 @@ logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="anilist-rec",
-    help="Local AniList anime/manga recommender (Ollama + sqlite-vec).",
+    help="Local AniList anime/manga/LN/manhwa recommender (Ollama + sqlite-vec).",
     no_args_is_help=True,
 )
 console = Console()
+
+_RELATION_TYPE_MAP: dict[str, list[str]] = {
+    "SEQUEL": ["SEQUEL"],
+    "SIDE_STORY": ["SIDE_STORY", "SPIN_OFF"],
+    "ADAPTATION": ["ADAPTATION", "SOURCE"],
+    "ALL": ["SEQUEL", "SIDE_STORY", "SPIN_OFF", "ADAPTATION", "SOURCE", "ALTERNATIVE"],
+}
 
 
 # --------------------------------------------------------------------------- sync
@@ -49,20 +56,17 @@ async def _sync(username: str, settings: Settings) -> None:
         stats = gc.user_statistics(user)
 
         works = scoring.build_works(entries, fav_ids, stats)
+
+        # --- 1. collaborative graph (top-N sources by |weight|)
         sources = [w for w in works if w.status != "PLANNING"]
         ordered_sources = sorted(sources, key=lambda w: -abs(w.weight))[: settings.max_graph_sources]
-
         console.print(
-            f"[cyan]Scored {len(works)} list entries; "
-            f"pulling collaborative graph from {len(ordered_sources)} sources…[/cyan]"
+            f"[cyan]Scored {len(works)} entries; pulling graph from {len(ordered_sources)} sources…[/cyan]"
         )
         rec_edges: list[tuple[int, int, dict]] = []
         with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeElapsedColumn(),
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+            BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
         ) as progress:
             task = progress.add_task("Collaborative graph", total=len(ordered_sources))
             for source in ordered_sources:
@@ -78,10 +82,42 @@ async def _sync(username: str, settings: Settings) -> None:
                     if rating is not None and target is not None:
                         rec_edges.append((source.media_id, int(rating), target))
                 progress.advance(task)
+
+        # --- 2. franchise relations for engaged works (sequels/prequels/adaptations)
+        engaged_ids = [w.media_id for w in works if w.status != "PLANNING"]
+        console.print(f"[cyan]Fetching franchise relations for {len(engaged_ids)} works…[/cyan]")
+        relation_edges: list[tuple[int, str, dict]] = []
+        chunk_size = 4
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+            BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+        ) as progress:
+            task = progress.add_task("Franchise relations", total=len(engaged_ids))
+            for start in range(0, len(engaged_ids), chunk_size):
+                chunk = engaged_ids[start : start + chunk_size]
+                try:
+                    relation_edges.extend(await client.fetch_relations_chunk(chunk))
+                except gc.AniListError as exc:
+                    logger.warning("relations chunk failed (%s) — retrying one-by-one", exc)
+                    for media_id in chunk:
+                        try:
+                            relation_edges.extend(await client.fetch_relations_chunk([media_id]))
+                        except gc.AniListError as exc2:
+                            logger.warning("relations for #%s failed: %s", media_id, exc2)
+                progress.advance(task, len(chunk))
     finally:
         await client.close()
 
     candidates = scoring.compute_graph_scores(works, rec_edges)
+    prequel_of, parent_of, relation_rows = scoring.build_relation_maps(relation_edges)
+
+    before = len(candidates)
+    candidates = scoring.apply_prequel_gatekeeping(works, candidates, prequel_of, parent_of)
+    if before - len(candidates):
+        console.print(f"[yellow]Gated {before - len(candidates)} orphan sequels → transferred to roots.[/yellow]")
+
+    all_media = [w.media for w in works] + [c.media for c in candidates]
+    scoring.annotate_roots(all_media, prequel_of, parent_of)
 
     candidate_ids = {c.media_id for c in candidates}
     edge_map: dict[tuple[int, int], int] = {}
@@ -98,25 +134,22 @@ async def _sync(username: str, settings: Settings) -> None:
         db_module.reset_schema(connection, settings.embedding_dim)
         synced_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         db_module.persist(
-            connection, works, candidates, edges, username, synced_at, settings.embedding_model
+            connection, works, candidates, edges, relation_rows,
+            username, synced_at, settings.embedding_model,
         )
 
         if candidates:
             console.print("[cyan]Loading embedding model on CPU (never touches the GPU)…[/cyan]")
             texts = [embeddings.build_embedding_text(c.media) for c in candidates]
             ids = [c.media_id for c in candidates]
-            chunk_size = 32
             with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("{task.completed}/{task.total}"),
-                TimeElapsedColumn(),
+                SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
             ) as progress:
                 task = progress.add_task("Embedding candidates", total=len(candidates))
-                for i in range(0, len(candidates), chunk_size):
-                    chunk_texts = texts[i : i + chunk_size]
-                    chunk_ids = ids[i : i + chunk_size]
+                for i in range(0, len(candidates), 32):
+                    chunk_texts = texts[i : i + 32]
+                    chunk_ids = ids[i : i + 32]
                     vectors = embeddings.embed_texts(chunk_texts, settings)
                     embeddings.store_vectors(connection, list(zip(chunk_ids, vectors)))
                     progress.advance(task, len(chunk_texts))
@@ -131,15 +164,13 @@ async def _sync(username: str, settings: Settings) -> None:
 
     console.print(
         f"[green]Done.[/green] {len(works)} works, {len(candidates)} candidates, "
-        f"taste profile → {settings.taste_profile_path}"
+        f"{len(relation_rows)} relations → {settings.taste_profile_path}"
     )
 
 
 @app.command()
-def sync(
-    username: str = typer.Argument(None, help="Your AniList username."),
-) -> None:
-    """Download AniList data, score it, build GraphScore + CPU embeddings."""
+def sync(username: str = typer.Argument(None, help="Your AniList username.")) -> None:
+    """Download AniList (anime + manga/LN/manhwa), score it, build graph + relations + embeddings."""
     settings = get_settings()
     username = username or settings.username
     if not username:
@@ -157,9 +188,29 @@ def _require_synced(settings: Settings) -> None:
         raise typer.Exit(1)
 
 
+def _candidate_table(title: str, candidates: list[dict]) -> Table:
+    table = Table(title=title)
+    table.add_column("#", justify="right")
+    table.add_column("Title")
+    table.add_column("Type")
+    table.add_column("Format")
+    table.add_column("GraphScore", justify="right")
+    table.add_column("Pool")
+    for index, candidate in enumerate(candidates, start=1):
+        table.add_row(
+            str(index),
+            candidate["title_romaji"] or candidate["title_english"] or f"#{candidate['media_id']}",
+            candidate["type"],
+            candidate["format"] or "—",
+            f"{candidate['graph_score']:.2f}",
+            "IN_PLANNING" if candidate["planning_bonus"] else "DISCOVERY",
+        )
+    return table
+
+
 @app.command()
 def profile() -> None:
-    """Show an analytical summary of your taste and latent recommendations."""
+    """Show an analytical summary of your taste, split anime vs manga/LN."""
     settings = get_settings()
     _require_synced(settings)
 
@@ -167,30 +218,27 @@ def profile() -> None:
     connection = db_module.connect(settings.db_path)
     try:
         meta = db_module.read_meta(connection)
-        status_rows = connection.execute(
-            "SELECT status, COUNT(*) AS n, ROUND(AVG(affinity_weight), 2) AS avg_w "
-            "FROM user_list GROUP BY status ORDER BY n DESC"
-        ).fetchall()
         summary = connection.execute(
             "SELECT ROUND(AVG(z_score), 3) AS avg_z, ROUND(AVG(affinity_weight), 3) AS avg_w "
             "FROM user_list WHERE status != 'PLANNING'"
         ).fetchone()
-        top = db_module.top_by_graph_score(connection, 10)
+        top_anime = db_module.top_by_graph_score(connection, 10, "ANIME")
+        top_manga = db_module.top_by_graph_score(connection, 10, "MANGA")
     finally:
         connection.close()
 
     console.print(f"[bold]Profile — {meta.get('username', '?')}[/bold]  (synced {meta.get('synced_at', '?')})")
     console.print(
         f"{meta.get('num_works', '?')} works · {meta.get('num_candidates', '?')} candidates · "
-        f"embeddings {meta.get('embedding_model', '?')}"
+        f"{meta.get('num_relations', '?')} relations"
     )
 
-    stats_table = Table(title="Global statistics", show_lines=False)
+    stats_table = Table(title="Global statistics")
     stats_table.add_column("Type")
     stats_table.add_column("Count", justify="right")
     stats_table.add_column("Mean score", justify="right")
     stats_table.add_column("Std dev", justify="right")
-    for key, label in (("anime", "ANIME"), ("manga", "MANGA")):
+    for key, label in (("anime", "ANIME"), ("manga", "MANGA / LN / Manhwa")):
         block = (profile.get("stats") or {}).get(key) or {}
         stats_table.add_row(
             label,
@@ -198,21 +246,8 @@ def profile() -> None:
             f"{block.get('mean_score', 0):.2f}",
             f"{block.get('std_dev', 0):.2f}",
         )
-    stats_table.add_row(
-        "ALL",
-        "",
-        f"avg Z = {summary['avg_z']}",
-        f"avg weight = {summary['avg_w']}",
-    )
+    stats_table.add_row("ALL", "", f"avg Z = {summary['avg_z']}", f"avg weight = {summary['avg_w']}")
     console.print(stats_table)
-
-    status_table = Table(title="List status distribution")
-    status_table.add_column("Status")
-    status_table.add_column("Count", justify="right")
-    status_table.add_column("Avg weight", justify="right")
-    for row in status_rows:
-        status_table.add_row(row["status"], str(row["n"]), str(row["avg_w"]))
-    console.print(status_table)
 
     if profile.get("top_tags"):
         tags_table = Table(title="Top affinity tags")
@@ -231,31 +266,83 @@ def profile() -> None:
             anti_table.add_row(item["name"], str(item["count"]))
         console.print(anti_table)
 
-    rec_table = Table(title="Top latent recommendations (highest GraphScore)")
-    rec_table.add_column("#", justify="right")
-    rec_table.add_column("Title")
-    rec_table.add_column("Type")
-    rec_table.add_column("GraphScore", justify="right")
-    rec_table.add_column("Pool")
-    rec_table.add_column("Positive bridges", justify="right")
-    for index, candidate in enumerate(top, start=1):
-        rec_table.add_row(
-            str(index),
-            candidate["title_romaji"] or candidate["title_english"] or f"#{candidate['media_id']}",
-            candidate["type"],
-            f"{candidate['graph_score']:.2f}",
-            "IN_PLANNING" if candidate["planning_bonus"] else "DISCOVERY",
-            str(len(candidate["positive_sources"])),
+    console.print(_candidate_table("Top 10 latent — ANIME", top_anime))
+    console.print(_candidate_table("Top 10 latent — MANGA / LN / Manhwa", top_manga))
+
+
+# --------------------------------------------------------------------------- sequels
+
+
+def _target_length(row: dict) -> str:
+    if row.get("target_episodes"):
+        return f"{row['target_episodes']} eps"
+    if row.get("target_chapters"):
+        return f"{row['target_chapters']} chap"
+    if row.get("target_volumes"):
+        return f"{row['target_volumes']} vol"
+    return "—"
+
+
+@app.command()
+def sequels(
+    media: str = typer.Option("ALL", "--media", help="ANIME | MANGA | ALL"),
+    type_: str = typer.Option("ALL", "--type", help="SEQUEL | SIDE_STORY | ADAPTATION | ALL"),
+    limit: int = typer.Option(30, "--limit", help="Number of rows to show"),
+) -> None:
+    """List your unseen sequels / OVAs / movies / spin-offs / adaptations, by affinity."""
+    settings = get_settings()
+    _require_synced(settings)
+
+    source_type = media.upper()
+    if source_type not in ("ANIME", "MANGA", "ALL"):
+        console.print("[red]--media must be ANIME, MANGA or ALL.[/red]")
+        raise typer.Exit(1)
+    relation_types = _RELATION_TYPE_MAP.get(type_.upper())
+    if relation_types is None:
+        console.print("[red]--type must be SEQUEL, SIDE_STORY, ADAPTATION or ALL.[/red]")
+        raise typer.Exit(1)
+
+    connection = db_module.connect(settings.db_path)
+    try:
+        rows = db_module.find_unseen_franchise_entries(
+            connection,
+            source_type=source_type if source_type != "ALL" else "BOTH",
+            relation_types=relation_types,
+            limit=limit,
         )
-    console.print(rec_table)
+    finally:
+        connection.close()
+
+    table = Table(title=f"Unseen franchise entries ({len(rows)})")
+    table.add_column("#", justify="right")
+    table.add_column("From (watched/read)")
+    table.add_column("Affinity", justify="right")
+    table.add_column("Relation")
+    table.add_column("Target")
+    table.add_column("Format")
+    table.add_column("Status")
+    table.add_column("Length")
+    table.add_column("Avg score", justify="right")
+    for index, row in enumerate(rows, start=1):
+        table.add_row(
+            str(index),
+            row["source_title_romaji"] or row["source_title_english"] or f"#{row['source_id']}",
+            f"{row['parent_weight']:+.2f}",
+            row["relation_type"],
+            row["target_title"] or "?",
+            row["target_format"] or "—",
+            row["target_status"] or "—",
+            _target_length(row),
+            str(row["target_score"]) if row["target_score"] is not None else "—",
+        )
+    console.print(table)
 
 
 # --------------------------------------------------------------------------- ask / chat
 
 
 def _log_tool(name: str, args: dict) -> None:
-    payload = json.dumps(args, ensure_ascii=False)
-    console.print(f"[dim]→ tool {name}: {payload[:220]}[/dim]")
+    console.print(f"[dim]→ tool {name}: {json.dumps(args, ensure_ascii=False)[:220]}[/dim]")
 
 
 @app.command()
