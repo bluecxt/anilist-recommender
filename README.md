@@ -1,7 +1,7 @@
 # anilist-recommender
 
 > 🤖 **Projet entièrement codé par une IA** (agent de programmation assisté), relu et
-> testé en boucle, mais **sans audit humain** à ce jour.
+> testé en boucle.
 >
 > 🔒 **100 % local & hors-ligne.** Ton profil AniList, tes notes, l'historique, les
 > embeddings et le LLM tournent **entièrement sur ta machine**. Aucun cloud, aucune
@@ -56,13 +56,17 @@ uv run anilist-rec sync
 # 2. Résumé analytique (stats Anime vs Manga/LN, top tags, anti-tags, top latent)
 uv run anilist-rec profile
 
-# 3. Audit des suites / OAV / films / spin-offs non vus (sans LLM)
+# 3. Pourquoi un titre est recommandé — décomposition déterministe, sans LLM
+#    (sources collaboratives + amortissement franchise + bonus planning + qualité)
+uv run anilist-rec explain "Frieren"
+
+# 4. Audit des suites / OAV / films / spin-offs non vus (sans LLM)
 uv run anilist-rec sequels --media ANIME --type ALL --limit 30
 
-# 4. Requête ponctuelle via le LLM (3 outils : recherche / suites / adaptations)
+# 5. Requête ponctuelle via le LLM (3 outils : recherche / suites / adaptations)
 uv run anilist-rec ask "Conseille-moi un anime psychologique de moins de 25 épisodes"
 
-# 5. Mode conversationnel
+# 6. Mode conversationnel
 uv run anilist-rec chat
 
 # Ajoute -v pour voir les appels d'outils du LLM (routing + paramètres) :
@@ -175,19 +179,31 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
    tirés par lots via `Page(id_in:)`, backoff 429.
 2. **Pondération** (`scoring.py`) — `affinity_weight` par œuvre (Z-score par média,
    anime vs manga), ratio de progression unifié (épisodes / chapitres / tomes / seuil 20).
-3. **Graphe collaboratif + relationnel** — `GraphScore` par candidat, puis **Prequel
-   Gatekeeping** : une saison 2/3 dont le préquel n'est pas terminé est retirée et son
-   score est **transféré** vers la racine.
+3. **Graphe collaboratif + relationnel** — `GraphScore` par candidat, amorti par
+   **franchise** (6 saisons d'une même série = UN attachement : les contributions
+   positives d'une même racine sont amorties en `1/√rang`, les négatives restent
+   cumulées). Puis **Prequel Gatekeeping multi-sauts** : une saison 2/3/4 dont le
+   préquel n'est pas terminé est retirée et son score est **transféré vers la
+   racine de la chaîne** (S4 → S3 → S2 → S1) quand elle est candidate.
 4. **Recherche hybride** (`db.py` + `embeddings.py`) — filtres SQL (catégorie, longueur,
-   pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
+   pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.45 + Sim·0.30 +
+   PlanningBonus·0.10 + Qualité·0.15` (avec requête sémantique ; `0.75/0.15/0.10`
+   sans). Le **bonus de planning** a une demi-vie de 2 ans (un titre qui dort dans ta
+   planning depuis 3 ans pèse moins) et le **facteur qualité** est `min(1, note/75)`.
+   Le `sync` est **atomique** (une seule transaction : un crash laisse l'ancienne base
+   intacte) et le **cache d'embeddings** réutilise les vecteurs inchangés entre deux
+   syncs.
 5. **Agent** (`agent.py`) — 3 outils (`search_new_recommendations`,
    `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`.
    Le LLM **sélectionne l'outil + ses paramètres**, puis la sortie est affichée telle quelle
    (aucune re-synthèse globale — source de toutes les erreurs passées). Pour la **recherche**
    (« conseille-moi »), une **2ᵉ passe annotée** fait écrire au LLM une phrase de *pourquoi*
-   par proposition, ancrée au **synopsis** (plus genres/tags/œuvres proches), avec repli
-   automatique sur les sources collaboratives si le modèle échoue. Les titres/formats/notes
+   par proposition, ancrée au **synopsis** (plus genres/tags/œuvres proches), demandée en
+   **JSON strict** (`json_object`) et validée côté code (parseur JSON → repli ligne à ligne →
+   repli sur les sources collaboratives si le modèle échoue). Les titres/formats/notes
    restent rendus par le code, jamais inventés par le modèle.
+   La commande `explain` rejoue le **même calcul déterministe** (sources, amortissement
+   franchise, bonus de planning, qualité) pour un titre donné — sans LLM.
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 
@@ -215,5 +231,5 @@ anilist-recommender/
     ├── scoring.py             # Z-scores, GraphScore, gatekeeping, taste_profile.json
     ├── embeddings.py          # vectorisation CPU + cosinus sqlite-vec
     ├── agent.py               # agent LLM (3 outils) + synthèse
-    └── cli.py                 # commandes sync / profile / sequels / ask / chat
+    └── cli.py                 # commandes sync / profile / explain / sequels / ask / chat
 ```
