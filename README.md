@@ -156,11 +156,12 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
    pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
 5. **Agent** (`agent.py`) — 3 outils (`search_new_recommendations`,
    `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`.
-   Chaque outil renvoie du **Markdown déjà mis en forme** (liste groupée par franchise
-   pour les suites, tableau pour la recherche), trié par affinité avec étoiles, statuts
-   localisés et titres dans la langue configurée. Le LLM **sélectionne uniquement l'outil
-   et ses paramètres**, puis le Markdown est affiché tel quel — aucune re-synthèse par le
-   modèle (source de toutes les erreurs passées : hallucination, troncature, remplissage).
+   Le LLM **sélectionne l'outil + ses paramètres**, puis le Markdown est affiché tel quel
+   (aucune re-synthèse globale). Pour la **recherche** (« conseille-moi »), une **2ᵉ passe
+   annotée** fait écrire au LLM une phrase de *pourquoi* par proposition, uniquement à partir
+   des données fournies (genres, tags, œuvres proches) — avec repli automatique sur les
+   sources collaboratives si le modèle échoue. Les titres/formats restent rendus par le code,
+   jamais inventés par le modèle.
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 

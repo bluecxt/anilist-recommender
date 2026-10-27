@@ -9,6 +9,7 @@ anything outside them. Output size is dynamic: detailed per-title analysis for
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -241,6 +242,8 @@ def rank_candidates(
                 "type": row["type"],
                 "format": row["format"],
                 "country": row["country_of_origin"],
+                "genres": row["genres"],
+                "tags": row["tags"],
                 "length": _length_label(row),
                 "episodes": row["episodes"],
                 "chapters": row["chapters"],
@@ -266,42 +269,7 @@ def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
     return max(1, min(limit, maximum))
 
 
-def _md_cell(text: Any) -> str:
-    return str(text).replace("|", "/").replace("\n", " ")
-
-
-def _format_search_table(items: list[dict[str, Any]], has_query: bool) -> str:
-    lines = [f"{len(items)} résultats (triés par note finale) :\n"]
-    head = "| # | Titre | Format | Graph"
-    sep = "|---|-------|--------|-------"
-    if has_query:
-        head += " | Sim"
-        sep += "|-----"
-    head += " | Final |"
-    sep += "|-------|"
-    lines.append(head)
-    lines.append(sep)
-    for index, item in enumerate(items, start=1):
-        cell = (
-            f"| {index} | {_md_cell(item['title'])} | "
-            f"{_md_cell(item['format']) or '—'} · {item['length']} | {item['graph_score']:.2f}"
-        )
-        if has_query:
-            cell += f" | {item['semantic_similarity']:.2f}"
-        cell += f" | {item['final_score']:.2f} |"
-        lines.append(cell)
-    if len(items) <= 5:
-        for item in items:
-            positives = item.get("positive_sources") or []
-            if positives:
-                lines.append(f"- **{item['title']}** · + {', '.join(positives[:3])}")
-            warnings = item.get("negative_warnings") or []
-            if warnings:
-                lines.append(f"  ⚠ {', '.join(warnings[:2])}")
-    return "\n".join(lines)
-
-
-def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> str:
+def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[str, Any]]:
     rows = db_module.search_new_recommendations(
         db,
         category=args.get("category") or "ANIME",
@@ -321,10 +289,85 @@ def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> str:
     if has_query:
         ids = [row["media_id"] for row in rows]
         similarities = embeddings_module.query_similarities(db, query, ids, settings)
-    ranked = rank_candidates(rows, similarities, has_query, settings.title_language)
-    if not ranked:
-        return "Aucun résultat avec ces filtres."
-    return _format_search_table(ranked, has_query)
+    return rank_candidates(rows, similarities, has_query, settings.title_language)
+
+
+def _annotate_search(
+    items: list[dict[str, Any]], client: Any, settings: Settings
+) -> dict[int, str]:
+    """One short French 'why' sentence per recommendation, grounded in the data.
+
+    The LLM only phrases the reason; titles/formats stay rendered by the code, so a
+    failure here never breaks the list — the caller falls back to `positive_sources`.
+    """
+    if not items:
+        return {}
+    profile = load_profile(settings)
+    top_genres = ", ".join(g["name"] for g in (profile.get("top_genres") or [])[:6])
+    top_tags = ", ".join(t["name"] for t in (profile.get("top_tags") or [])[:6])
+
+    bullets = []
+    for index, item in enumerate(items[:10], start=1):
+        genres = ", ".join(item.get("genres") or [])[:120]
+        tags = ", ".join((item.get("tags") or [])[:6])
+        sources = "; ".join(item.get("positive_sources") or [])[:160] or "—"
+        bullets.append(
+            f"{index}. {item['title']} | {item.get('format')} {item['length']} | "
+            f"genres: {genres} | tags: {tags} | proche de: {sources}"
+        )
+
+    prompt = (
+        "Écris pour chaque recommandation UNE phrase française courte (≤ 20 mots) expliquant "
+        "POURQUOI elle plaira à l'utilisateur. Utilise UNIQUEMENT les données fournies "
+        "(genres, tags, œuvres proches). N'invente rien, ne répète pas le titre, ne cite pas "
+        "de chiffres.\n\n"
+        f"Genres préférés : {top_genres}\nTags préférés : {top_tags}\n\n"
+        + "\n".join(bullets)
+        + "\n\nRéponds exactement une ligne par numéro, sans texte supplémentaire."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=settings.ollama_model,
+            messages=[
+                {"role": "system", "content": "Tu es concis, factuel, et tu réponds en français."},
+                {"role": "user", "content": prompt},
+            ],
+            extra_body={"options": {"num_ctx": 8192, "temperature": 0.3}},
+        )
+        text = (response.choices[0].message.content or "").strip()
+    except Exception:
+        return {}
+
+    annotations: dict[int, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^\s*(\d+)\s*[.):\-]\s*(.+)$", line.strip())
+        if not match:
+            continue
+        index = int(match.group(1))
+        sentence = match.group(2).strip()
+        if 1 <= index <= len(items) and sentence:
+            annotations[index] = sentence
+    return annotations
+
+
+def _render_search(
+    items: list[dict[str, Any]], annotations: dict[int, str], has_query: bool
+) -> str:
+    lines = [f"{len(items)} recommandations (triées par affinité) :\n"]
+    for index, item in enumerate(items, start=1):
+        meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
+        if has_query and item.get("semantic_similarity") is not None:
+            meta += f" · sim {item['semantic_similarity']:.2f}"
+        lines.append(f"{index}. **{item['title']}** — {meta} · affinité {item['graph_score']:.2f}")
+        why = annotations.get(index)
+        if why:
+            lines.append(f"   → {why}")
+        elif item.get("positive_sources"):
+            lines.append(f"   → proche de : {', '.join(item['positive_sources'][:2])}")
+        if item.get("negative_warnings"):
+            lines.append(f"   ⚠ {', '.join(item['negative_warnings'][:2])}")
+    return "\n".join(lines)
 
 
 def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
@@ -571,7 +614,15 @@ def run_agent(
             if on_tool_call is not None:
                 on_tool_call(call.function.name, args)
             result = execute_tool(call.function.name, args, settings)
-            content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            if call.function.name == "search_new_recommendations" and isinstance(result, list):
+                if not result:
+                    content = "Aucun résultat avec ces filtres."
+                else:
+                    has_query = any(item.get("semantic_similarity") is not None for item in result)
+                    annotations = _annotate_search(result, client, settings)
+                    content = _render_search(result, annotations, has_query)
+            else:
+                content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             outputs.append(content)
             messages.append(
                 {
