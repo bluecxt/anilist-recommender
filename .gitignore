@@ -1,0 +1,19 @@
+# --- Local user data (never commit your AniList profile) ---
+data/
+
+# --- Python / uv ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# --- Editors / OS ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
