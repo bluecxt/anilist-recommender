@@ -217,17 +217,21 @@ def rank_candidates(
     if not rows:
         return []
     scores = [row["graph_score"] or 0.0 for row in rows]
-    gmin, gmax = min(scores), max(scores)
-    span = gmax - gmin
-
-    def norm(value: float) -> float:
-        if span < 1e-9:
-            return 1.0 if gmax > 0 else 0.0
-        return (value - gmin) / span
+    # Rank-percentile normalization: Min-Max collapses a power-law GraphScore
+    # distribution (2-3 mega-hits dwarf 95% of candidates near 0). Rank spreads the
+    # filtered set uniformly over [0, 1] so the 0.55 graph weight stays meaningful.
+    n = len(scores)
+    order = sorted(range(n), key=lambda i: scores[i])
+    rank_norm = [0.0] * n
+    if n > 1:
+        for rank, idx in enumerate(order):
+            rank_norm[idx] = rank / (n - 1)
+    else:
+        rank_norm[0] = 1.0 if scores[0] > 0 else 0.0
 
     ranked: list[dict[str, Any]] = []
-    for row in rows:
-        graph_norm = norm(row["graph_score"] or 0.0)
+    for index, row in enumerate(rows):
+        graph_norm = rank_norm[index]
         similarity = similarities.get(row["media_id"], 0.0)
         planning = row["planning_bonus"] or 0.0
         final = graph_norm * 0.55 + similarity * 0.35 + planning * 0.10 if has_query else (

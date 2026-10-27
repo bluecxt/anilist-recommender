@@ -390,6 +390,18 @@ def search_new_recommendations(
         if excluded_terms and _matches_any(excluded_terms, haystack):
             continue
         results.append(candidate)
+
+    # Safety net: the LLM often invents a non-canonical tag (e.g. "Mind Games" instead
+    # of AniList's "Psychological"), which would otherwise return an empty list. Drop the
+    # required filter — keeping the excluded one — instead of showing nothing.
+    if not results and required_terms:
+        for row in rows:
+            candidate = _row_to_candidate(row)
+            haystack = {g.lower() for g in candidate["genres"]} | {t.lower() for t in candidate["tags"]}
+            if excluded_terms and _matches_any(excluded_terms, haystack):
+                continue
+            results.append(candidate)
+
     return results[:limit]
 
 
