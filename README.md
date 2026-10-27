@@ -169,7 +169,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
 | `ANILIST_REQUEST_INTERVAL` | `0.85` | Cadence **initiale** entre deux requêtes (s). Elle s'**auto-adapte** : chaque 429 la ralentit (×1,5, plafond 6 s) pour converger vers le vrai plafond d'AniList au lieu de le percuter ; le quota est aussi piloté par les headers `X-RateLimit-*` |
 | `ANILIST_TITLE_LANGUAGE` | `english` | Langue d'affichage des titres : `english` \| `romaji` \| `native` (japonais), avec repli automatique |
-| `ANILIST_ALLOW_ADULT` | `false` | Inclure le contenu adulte (hentai, `isAdult=true`) dans `search_new_recommendations`. Désactivé par défaut |
+| `ANILIST_ALLOW_ADULT` | `false` | Inclure le contenu adulte (hentai, `isAdult=true`) dans `search_new_recommendations`. Désactivé par défaut. Quand la requête mentionne hentai/adult/ecchi/18+…, la recherche se restreint aux titres `isAdult` (anime **et** manga/OVA) et injecte la requête comme vecteur sémantique ; sans ce flag, une telle requête répond par une invitation à l'activer |
 
 ---
 

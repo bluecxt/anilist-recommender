@@ -490,25 +490,40 @@ def _wants_adult(query: str) -> bool:
 def _search_new(
     args: dict[str, Any], db: Any, settings: Settings, query: str = ""
 ) -> list[dict[str, Any]]:
-    # Adult content is often OVA/short format, so an explicit adult request also
-    # widens the format filter (AniList has no 'hentai' genre the model can pick).
+    # Adult content is often OVA/short format and lives in BOTH anime and manga, so
+    # an explicit adult request widens the format/category filters and pins the pool
+    # to is_adult titles (AniList has no 'hentai' genre the model can pick, and the
+    # embedding of 'hentai' alone would otherwise latch onto dark manga like Berserk).
     adult_request = settings.allow_adult and _wants_adult(query)
-    include_movies = adult_request or (
-        _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
-    )
+    if adult_request:
+        category = "ANY"
+        include_movies = True
+        min_length = max_length = max_volumes = None
+        required = excluded = None
+        adult_only = True
+    else:
+        category = _to_str(args.get("category"), "ANIME")
+        include_movies = _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
+        min_length = _to_int(args.get("min_length"))
+        max_length = _to_int(args.get("max_length"))
+        max_volumes = _to_int(args.get("max_volumes"))
+        required = _to_str_list(args.get("required_genres_or_tags"))
+        excluded = _to_str_list(args.get("excluded_genres_or_tags"))
+        adult_only = False
     rows = db_module.search_new_recommendations(
         db,
-        category=_to_str(args.get("category"), "ANIME"),
+        category=category,
         include_movies_or_ovas=include_movies,
-        min_length=_to_int(args.get("min_length")),
-        max_length=_to_int(args.get("max_length")),
-        max_volumes=_to_int(args.get("max_volumes")),
+        min_length=min_length,
+        max_length=max_length,
+        max_volumes=max_volumes,
         source_pool=_to_str(args.get("source_pool"), "BOTH"),
         only_finished=_to_bool(args.get("only_finished")),
-        required=_to_str_list(args.get("required_genres_or_tags")),
-        excluded=_to_str_list(args.get("excluded_genres_or_tags")),
+        required=required,
+        excluded=excluded,
         limit=_clamp_limit(args, 10, 30),
         allow_adult=settings.allow_adult,
+        adult_only=adult_only,
     )
     semantic = (args.get("semantic_query") or "").strip()
     if adult_request and not semantic:
@@ -982,6 +997,17 @@ def run_agent(
     history: list[dict[str, Any]] | None = None,
     on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> str:
+    # A request for adult content without `allow_adult` would only surface unrelated
+    # titles (the is_adult exclusion empties the pool, so the vector search latches
+    # onto dark manga instead). Refuse early with an actionable hint.
+    if _wants_adult(query) and not settings.allow_adult:
+        return (
+            "Contenu adulte désactivé : ta demande mentionne du contenu hentai/adulte, "
+            "mais `allow_adult` est sur `false`.\n"
+            "Active-le avec `ANILIST_ALLOW_ADULT=true` (ou `allow_adult = true` dans "
+            "config.toml) puis relance ta demande."
+        )
+
     client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=180.0)
     system_prompt = build_system_prompt(load_profile(settings))
 

@@ -387,6 +387,7 @@ _CATEGORY_MAP: dict[str, tuple[list[str], str]] = {
     "MANHWA": (["m.type = 'MANGA'", "m.format = 'MANGA'", "m.country_of_origin IN ('KR','CN')"], "m.chapters"),
     "ONE_SHOT": (["m.type = 'MANGA'", "m.format = 'ONE_SHOT'"], "m.chapters"),
     "ANY_PRINT": (["m.type = 'MANGA'"], "COALESCE(m.chapters, m.volumes)"),
+    "ANY": (["m.type IN ('ANIME','MANGA')"], "COALESCE(m.episodes, m.chapters, m.volumes)"),
 }
 
 _GATE_SQL = (
@@ -410,13 +411,16 @@ def search_new_recommendations(
     excluded: Sequence[str] | None = None,
     limit: int = 5,
     allow_adult: bool = False,
+    adult_only: bool = False,
 ) -> list[dict[str, Any]]:
     base, length_expr = _CATEGORY_MAP[category]
     conditions = list(base)
     params: list[Any] = []
 
     # Adult (hentai) titles are excluded unless explicitly requested.
-    if not allow_adult:
+    if adult_only:
+        conditions.append("m.is_adult = 1")
+    elif not allow_adult:
         conditions.append("(m.is_adult IS NULL OR m.is_adult = 0)")
 
     if category == "ANIME" and not include_movies_or_ovas:
