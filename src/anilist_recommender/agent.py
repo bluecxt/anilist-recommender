@@ -8,6 +8,7 @@ anything outside them. Output size is dynamic: detailed per-title analysis for
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import time
@@ -401,8 +402,8 @@ def _parse_annotations_json(text: str, count: int) -> dict[int, str]:
     of ``{"index"/"id", "reason"/"why"/"text"}`` objects. Empty dict when the
     model ignored the JSON contract — the caller falls back to line parsing."""
     try:
-        parsed: Any = json.loads(_strip_fences(text))
-    except ValueError:
+        parsed: Any = _load_json_like(_strip_fences(text))
+    except (ValueError, SyntaxError):
         return {}
 
     def _sentence(value: Any) -> str:
@@ -550,6 +551,8 @@ def _render_search(
         if item.get("negative_warnings"):
             warnings = " · ".join(_format_source(s, language) for s in item["negative_warnings"][:2])
             lines.append(f"   [red]⚠ recommandé aussi par {warnings}[/red]")
+        if index < len(items):
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -788,13 +791,25 @@ def _extract_json_object(text: str) -> str | None:
     return None
 
 
+def _load_json_like(text: str) -> Any:
+    """Parse a JSON-ish string, tolerating Python-style ``True``/``False``/``None``.
+
+    llama3.1 frequently emits ``False`` instead of ``false`` — strict ``json.loads``
+    rejects it, so we fall back to ``ast.literal_eval`` (safe, never executes code).
+    """
+    try:
+        return json.loads(text)
+    except ValueError:
+        return ast.literal_eval(text)  # raises ValueError / SyntaxError on failure
+
+
 def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
     """Recover a tool call emitted as a JSON string instead of native `tool_calls`.
 
     Some Ollama models dump the call into `message.content` as e.g.
     `{"name": "...", "parameters": {...}}` (or `"arguments"`), possibly wrapped
-    in prose or code fences. Parse it so the request still executes instead of
-    printing the raw JSON.
+    in prose or code fences, and often with Python booleans (`False`). Parse it so
+    the request still executes instead of printing the raw JSON.
     """
     text = (content or "").strip()
     if not text:
@@ -802,23 +817,23 @@ def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    data: Any
-    try:
-        data = json.loads(text)
-    except ValueError:
-        extracted = _extract_json_object(text)
-        if extracted is None:
-            return None, {}
+
+    data: Any = None
+    for candidate in (text, _extract_json_object(text)):
+        if not candidate:
+            continue
         try:
-            data = json.loads(extracted)
-        except ValueError:
-            return None, {}
+            data = _load_json_like(candidate)
+            break
+        except (ValueError, SyntaxError):
+            continue
+
     if isinstance(data, dict) and data.get("name"):
         params = data.get("parameters") or data.get("arguments") or {}
         if isinstance(params, str):
             try:
-                params = json.loads(params)
-            except ValueError:
+                params = _load_json_like(params)
+            except (ValueError, SyntaxError):
                 params = {}
         if isinstance(params, dict):
             return str(data["name"]), params
