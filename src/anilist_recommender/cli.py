@@ -698,6 +698,7 @@ def config() -> None:
     table.add_row("max_graph_sources", str(settings.max_graph_sources))
     table.add_row("request_interval", str(settings.request_interval))
     table.add_row("title_language", settings.title_language)
+    table.add_row("allow_adult", str(settings.allow_adult))
     console.print(table)
 
 

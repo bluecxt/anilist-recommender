@@ -27,3 +27,7 @@ username = "YOUR_ANILIST_USERNAME"
 # Collaborative-graph budget & rate-limit tuning.
 # max_graph_sources = 60
 # request_interval = 0.85
+
+# Include adult (hentai) titles in `search_new_recommendations` results.
+# Off by default — the recommender otherwise silently excludes isAdult content.
+# allow_adult = true

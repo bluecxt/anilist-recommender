@@ -409,13 +409,15 @@ def search_new_recommendations(
     required: Sequence[str] | None = None,
     excluded: Sequence[str] | None = None,
     limit: int = 5,
+    allow_adult: bool = False,
 ) -> list[dict[str, Any]]:
     base, length_expr = _CATEGORY_MAP[category]
     conditions = list(base)
     params: list[Any] = []
 
-    # Adult (hentai) titles never belong in a "recommend me something" list.
-    conditions.append("(m.is_adult IS NULL OR m.is_adult = 0)")
+    # Adult (hentai) titles are excluded unless explicitly requested.
+    if not allow_adult:
+        conditions.append("(m.is_adult IS NULL OR m.is_adult = 0)")
 
     if category == "ANIME" and not include_movies_or_ovas:
         conditions.append("m.format IN ('TV','TV_SHORT','ONA')")

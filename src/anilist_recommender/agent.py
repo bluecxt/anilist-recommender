@@ -491,6 +491,7 @@ def _search_new(
         required=_to_str_list(args.get("required_genres_or_tags")),
         excluded=_to_str_list(args.get("excluded_genres_or_tags")),
         limit=_clamp_limit(args, 10, 30),
+        allow_adult=settings.allow_adult,
     )
     query = (args.get("semantic_query") or "").strip()
     has_query = bool(query)

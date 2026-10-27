@@ -76,6 +76,9 @@ class Settings:
     # Preferred title language for display: "english" | "romaji" | "native".
     title_language: str
 
+    # Include adult (hentai) titles in search results. Off by default.
+    allow_adult: bool
+
     config_path: Path | None
 
     @property
@@ -148,6 +151,13 @@ def _pick_float(file_cfg: dict, file_key: str, env_key: str, default: float) -> 
         return default
 
 
+def _pick_bool(file_cfg: dict, file_key: str, env_key: str, default: bool) -> bool:
+    value = _pick(file_cfg, file_key, env_key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_settings() -> Settings:
     """Build the immutable settings object (env + config file + defaults)."""
     config_path = _find_config_file()
@@ -167,6 +177,8 @@ def get_settings() -> Settings:
     if title_language not in TITLE_LANGUAGES:
         title_language = "english"
 
+    allow_adult = _pick_bool(file_cfg, "allow_adult", "ANILIST_ALLOW_ADULT", False)
+
     return Settings(
         data_dir=data_dir,
         db_path=data_dir / "anilist_local.db",
@@ -181,5 +193,6 @@ def get_settings() -> Settings:
         max_graph_sources=_pick_int(file_cfg, "max_graph_sources", "ANILIST_MAX_GRAPH_SOURCES", 60),
         request_interval=_pick_float(file_cfg, "request_interval", "ANILIST_REQUEST_INTERVAL", 0.85),
         title_language=title_language,
+        allow_adult=allow_adult,
         config_path=config_path,
     )
