@@ -121,9 +121,27 @@ TOOLS: list[dict[str, Any]] = [
                             "wants its anime adaptation."
                         ),
                     },
-                    "target_print_format": {"type": "string", "enum": ["ANY", "MANGA", "NOVEL"]},
-                    "min_user_score": {"type": "integer", "description": "Only works the user scored >= this (default 75)."},
-                    "only_finished_target": {"type": "boolean", "description": "Only fully published targets."},
+                    "target_print_format": {
+                        "type": "string",
+                        "enum": ["ANY", "MANGA", "NOVEL", "LIGHT_NOVEL"],
+                        "description": "Target format. NOVEL / LIGHT_NOVEL = light novel (roman). MANGA = manga.",
+                    },
+                    "min_user_score": {
+                        "type": "integer",
+                        "description": (
+                            "Filter by the SOURCE anime's user score (0-100). 0 = no score filter. "
+                            "Only raise it if the user asks for 'mes préférés' / 'bien notés'."
+                        ),
+                    },
+                    "only_finished_target": {
+                        "type": "boolean",
+                        "description": (
+                            "Only show manga/LN targets that are fully published (FINISHED). "
+                            "Leave false unless the user wants 'un LN terminé'. NOTE: the user "
+                            "having FINISHED the anime is already handled — this only concerns "
+                            "the manga/LN target's publication status."
+                        ),
+                    },
                     "limit": {"type": "integer", "description": "Max results (default 15, up to 40)."},
                 },
                 "required": ["direction"],
@@ -150,16 +168,19 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "running fully offline. You reason only from the local database and the taste profile "
         "below, across every medium: TV, movies, OVAs, manga, light novels, Korean manhwa and "
         "Chinese manhua.\n\n"
-        "TOOL SELECTION — decide by what the user HAS and what they WANT:\n"
-        "- WANTS new titles (\"conseille-moi\", \"je veux découvrir\") → search_new_recommendations.\n"
-        "- HAS an anime, WANTS its sequel/OVA/movie/spin-off IN ANIME → "
-        "find_unseen_franchise_entries(source_type=ANIME).\n"
-        "- HAS an anime, WANTS the manga/LN that CONTINUES the story (\"la suite est en manga / "
-        "light novel / roman\") → find_cross_media_adaptations(direction=ANIME_TO_PRINT).\n"
-        "- HAS a manga/LN, WANTS its anime adaptation → "
+        "TOOL SELECTION — keyword priority (highest first):\n"
+        "1. The words \"suite\", \"sequel\", \"continuation\", \"la suite\", \"lire la suite\" are a "
+        "HARD signal. They NEVER map to search_new_recommendations.\n"
+        "   - continuation in the SAME medium (anime sequel/OVA/movie/spin-off) → "
+        "find_unseen_franchise_entries.\n"
+        "   - continuation in ANOTHER medium (\"la suite est en manga / light novel / roman\", "
+        "\"dispo uniquement en manga\") → find_cross_media_adaptations(direction=ANIME_TO_PRINT).\n"
+        "2. \"conseille-moi\", \"je veux découvrir\", \"que regarder/lire\" WITHOUT any \"suite\" → "
+        "search_new_recommendations.\n"
+        "3. HAS a manga/LN, WANTS its anime adaptation → "
         "find_cross_media_adaptations(direction=PRINT_TO_ANIME).\n"
-        "Rule of thumb: if \"manga\" or \"light novel\" designates WHERE THE STORY CONTINUES "
-        "(not a side bonus), use find_cross_media_adaptations with direction=ANIME_TO_PRINT.\n\n"
+        "Rule of thumb: \"conseille-moi une suite …\" is about a CONTINUATION, not a discovery — "
+        "use the franchise or cross-media tool, never search.\n\n"
         "STRICT RULES:\n"
         "1. LANGUAGE (critical): always answer in FRENCH (the user's language), never in "
         "English or Chinese — even though the titles are Japanese and the data is English.\n"
@@ -174,7 +195,11 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "return a ready-made Markdown list — RELAY it as-is. Never describe the JSON "
         "structure or invent numbers.\n"
         "6. Be direct, analytical, zero filler.\n"
-        "7. If a tool returns nothing, say so plainly and suggest looser filters.\n\n"
+        "7. If a tool returns nothing, answer in ONE French sentence: \"Aucun résultat avec ces "
+        "filtres.\" and, only if helpful, name ONE looser filter — never echo the tool's "
+        "parameters back as advice.\n"
+        "8. Keep filters minimal: leave min_user_score and only_finished_target unset unless "
+        "the user explicitly asks for 'mes préférés' (high score) or 'un LN/manga terminé'.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
 
@@ -320,16 +345,20 @@ def _franchise(args: dict[str, Any], db: Any) -> str:
 
 
 def _adaptations(args: dict[str, Any], db: Any) -> str:
+    fmt = (args.get("target_print_format") or "ANY").strip().upper()
+    if fmt in ("LIGHT_NOVEL", "LN"):
+        fmt = "NOVEL"
+    min_score = int(args.get("min_user_score") or 0)
     rows = db_module.find_cross_media_adaptations(
         db,
         direction=args.get("direction") or "ANIME_TO_PRINT",
-        target_print_format=args.get("target_print_format") or "ANY",
-        min_user_score=int(args.get("min_user_score") or 75),
+        target_print_format=fmt,
+        min_user_score=min_score,
         only_finished_target=bool(args.get("only_finished_target")),
         limit=_clamp_limit(args, 15, 40),
     )
     if not rows:
-        return "No cross-media adaptations found. Suggest loosening the filters."
+        return "No cross-media adaptations found with these filters."
     lines = [_relation_summary_from_row(r) for r in rows]
     return f"{len(lines)} cross-media links (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
 

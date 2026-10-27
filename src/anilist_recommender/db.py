@@ -456,7 +456,7 @@ def find_cross_media_adaptations(
     *,
     direction: str = "ANIME_TO_PRINT",
     target_print_format: str = "ANY",
-    min_user_score: int = 75,
+    min_user_score: int = 0,
     only_finished_target: bool = False,
     limit: int = 15,
 ) -> list[dict[str, Any]]:
