@@ -475,10 +475,27 @@ def _wants_movies(query: str) -> bool:
     return bool(_MOVIE_HINT.search(query or ""))
 
 
+_ADULT_HINT = re.compile(
+    r"\b(hentai|adult|adulte|ecchi|nudit[ée]|18\+|sexuel(?:le)?s?|"
+    r"[ée]rotique|porno?|hardcore)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_adult(query: str) -> bool:
+    """Detect an explicit adult-content request (only honoured when allow_adult)."""
+    return bool(_ADULT_HINT.search(query or ""))
+
+
 def _search_new(
     args: dict[str, Any], db: Any, settings: Settings, query: str = ""
 ) -> list[dict[str, Any]]:
-    include_movies = _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
+    # Adult content is often OVA/short format, so an explicit adult request also
+    # widens the format filter (AniList has no 'hentai' genre the model can pick).
+    adult_request = settings.allow_adult and _wants_adult(query)
+    include_movies = adult_request or (
+        _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
+    )
     rows = db_module.search_new_recommendations(
         db,
         category=_to_str(args.get("category"), "ANIME"),
@@ -493,12 +510,16 @@ def _search_new(
         limit=_clamp_limit(args, 10, 30),
         allow_adult=settings.allow_adult,
     )
-    query = (args.get("semantic_query") or "").strip()
-    has_query = bool(query)
+    semantic = (args.get("semantic_query") or "").strip()
+    if adult_request and not semantic:
+        # The model has no adult genre/tag to select, so embed the user's own
+        # request as the vector query to actually surface adult titles.
+        semantic = query
+    has_query = bool(semantic)
     similarities: dict[int, float] = {}
     if has_query:
         ids = [row["media_id"] for row in rows]
-        similarities = embeddings_module.query_similarities(db, query, ids, settings)
+        similarities = embeddings_module.query_similarities(db, semantic, ids, settings)
     return rank_candidates(rows, similarities, has_query, settings.title_language)
 
 
