@@ -50,7 +50,9 @@ uv run anilist-rec --help
 uv run anilist-rec config
 
 # 1. Synchroniser (anime + manga/LN/manhwa, graphe relationnel, embeddings CPU)
+#    Les logs de rate-limit/retry AniList sont masqués par défaut ; ajoute -v pour les voir :
 uv run anilist-rec sync
+# uv run anilist-rec sync -v
 
 # 2. Résumé analytique (stats Anime vs Manga/LN, top tags, anti-tags, top latent)
 uv run anilist-rec profile

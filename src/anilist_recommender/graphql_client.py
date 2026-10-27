@@ -259,7 +259,7 @@ class AniListClient:
             if response.status_code == 429:
                 self._effective_interval = min(self._max_interval, self._effective_interval * 1.5)
                 delay = self._backoff_delay(response.headers, 5.0)
-                logger.warning(
+                logger.info(
                     "AniList HTTP 429 — slowing to %.2fs/req, backing off %.1fs",
                     self._effective_interval, delay,
                 )
@@ -268,7 +268,7 @@ class AniListClient:
 
             if response.status_code >= 500:
                 delay = self._backoff_delay(response.headers, 3.0)
-                logger.warning("AniList HTTP %s — retrying in %.1fs", response.status_code, delay)
+                logger.info("AniList HTTP %s — retrying in %.1fs", response.status_code, delay)
                 await asyncio.sleep(delay)
                 continue
 
@@ -284,7 +284,7 @@ class AniListClient:
                 messages = [e.get("message", "") or "" for e in errors]
                 if any("Too Many Requests" in m or e.get("status") == 429 for m, e in zip(messages, errors)):
                     self._effective_interval = min(self._max_interval, self._effective_interval * 1.5)
-                    logger.warning(
+                    logger.info(
                         "AniList rate limit (GraphQL) — slowing to %.2fs/req, backing off 5s",
                         self._effective_interval,
                     )
@@ -375,12 +375,12 @@ class AniListClient:
             try:
                 edges.extend(await self.fetch_relations_chunk(chunk))
             except AniListError as exc:
-                logger.warning("bulk relations chunk failed (%s) — retrying one-by-one", exc)
+                logger.info("bulk relations chunk failed (%s) — retrying one-by-one", exc)
                 for media_id in chunk:
                     try:
                         edges.extend(await self.fetch_relations_chunk([media_id]))
                     except AniListError as exc2:
-                        logger.warning("relations for #%s failed: %s", media_id, exc2)
+                        logger.info("relations for #%s failed: %s", media_id, exc2)
         return edges
 
 

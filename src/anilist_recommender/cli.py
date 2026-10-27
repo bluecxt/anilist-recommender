@@ -26,6 +26,11 @@ from .config import get_settings, Settings, pick_title
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+
+def _set_log_level(verbose: bool) -> None:
+    """Show transient AniList rate-limit/retry logs only when `--verbose` is set."""
+    logging.getLogger().setLevel(logging.INFO if verbose else logging.WARNING)
+
 app = typer.Typer(
     name="anilist-rec",
     help="Local AniList anime/manga/LN/manhwa recommender (Ollama + sqlite-vec).",
@@ -76,12 +81,12 @@ async def _sync(username: str, settings: Settings) -> None:
                 try:
                     rec_edges.extend(await client.fetch_recommendations_batch(ids, per_page=15))
                 except gc.AniListError as exc:
-                    logger.warning("batch recommendations failed (%s) — retrying one-by-one", exc)
+                    logger.info("batch recommendations failed (%s) — retrying one-by-one", exc)
                     for source in chunk:
                         try:
                             nodes = await client.fetch_recommendations(source.media_id, per_page=15)
                         except gc.AniListError as exc2:
-                            logger.warning("skipping #%s: %s", source.media_id, exc2)
+                            logger.info("skipping #%s: %s", source.media_id, exc2)
                             continue
                         for node in nodes:
                             rating = node.get("rating")
@@ -105,12 +110,12 @@ async def _sync(username: str, settings: Settings) -> None:
                 try:
                     relation_edges.extend(await client.fetch_relations_chunk(chunk))
                 except gc.AniListError as exc:
-                    logger.warning("relations chunk failed (%s) — retrying one-by-one", exc)
+                    logger.info("relations chunk failed (%s) — retrying one-by-one", exc)
                     for media_id in chunk:
                         try:
                             relation_edges.extend(await client.fetch_relations_chunk([media_id]))
                         except gc.AniListError as exc2:
-                            logger.warning("relations for #%s failed: %s", media_id, exc2)
+                            logger.info("relations for #%s failed: %s", media_id, exc2)
                 progress.advance(task, len(chunk))
     finally:
         await client.close()
@@ -176,9 +181,13 @@ async def _sync(username: str, settings: Settings) -> None:
 
 
 @app.command()
-def sync(username: str = typer.Argument(None, help="Your AniList username.")) -> None:
+def sync(
+    username: str = typer.Argument(None, help="Your AniList username."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show AniList rate-limit / retry logs."),
+) -> None:
     """Download AniList (anime + manga/LN/manhwa), score it, build graph + relations + embeddings."""
     settings = get_settings()
+    _set_log_level(verbose)
     username = username or settings.username
     if not username:
         console.print("[red]Provide a username: `anilist-rec sync <username>`[/red]")
