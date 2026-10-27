@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import re
+import sys
 import time
 from typing import Any, Callable
 
@@ -101,6 +103,16 @@ TOOLS: list[dict[str, Any]] = [
                     "required_genres_or_tags": {"type": "array", "items": {"type": "string"}},
                     "excluded_genres_or_tags": {"type": "array", "items": {"type": "string"}},
                     "semantic_query": {"type": "string", "description": "English mood/theme description for vector search."},
+                    "strict_filter_question": {
+                        "type": "string",
+                        "description": (
+                            "Optional. If the user request carries a precise thematic constraint, "
+                            "a specific trope, or an exclusion/negation (e.g. 'no romance', 'no "
+                            "high school', 'adult protagonist', 'huis clos'), phrase ONE closed "
+                            "Yes/No question in ENGLISH verifying whether a candidate's synopsis "
+                            "respects it. Leave unset for a plain genre search."
+                        ),
+                    },
                     "limit": {"type": "integer", "description": "Number of results (default 5, up to 30)."},
                 },
                 "required": ["category"],
@@ -485,8 +497,139 @@ def _wants_adult(query: str) -> bool:
     return bool(_ADULT_HINT.search(query or ""))
 
 
+_NEGATION_HINT = re.compile(
+    r"\b(sans|sauf|except|excluding|without|no\b|not\b|ni\b|aucun[es]?|hors|"
+    r"pas d['e])\b",
+    re.IGNORECASE,
+)
+
+
+def _has_negation(query: str) -> bool:
+    """True when the user phrased an exclusion ('no romance', 'sans lycéens')."""
+    return bool(_NEGATION_HINT.search(query or ""))
+
+
+def _resolve_filter_question(args: dict[str, Any], query: str) -> str:
+    """Return the strict Yes/No verification question, or '' when none applies.
+
+    Primary source is the model's own ``strict_filter_question``; if the request
+    carries an explicit negation but the model omitted the field, fall back to a
+    generic constraint check so the reranker still fires.
+    """
+    question = (args.get("strict_filter_question") or "").strip()
+    if question:
+        return question
+    if _has_negation(query):
+        return (
+            "Does this title satisfy the user's request, including every exclusion "
+            "expressed in it (sans/without/no/not)?"
+        )
+    return ""
+
+
+_JEFF_SYSTEM = (
+    "You are a deterministic binary classifier. Evaluate if the candidate anime/manga "
+    "matches the user requirement based strictly on its genres, tags, and synopsis. "
+    "Respond with a single token: Y (Yes) or N (No)."
+)
+
+_YES_TOKENS = ("Y", "YES", "Yes", "yes", "Oui", "oui")
+_NO_TOKENS = ("N", "NO", "No", "no", "Non", "non")
+
+
+def _jev_p_yes(
+    client: Any, settings: Settings, user_query: str, filter_question: str, item: dict[str, Any]
+) -> float:
+    """Binary Yes/No probability for one candidate via 1-token logprobs.
+
+    Uses the log-probabilities of the affirmation vs negation tokens (softmax over
+    the two), so a confident 'Y' yields P≈1 and an ambiguous split lands near 0.5.
+    Falls back to a token-string heuristic when logprobs are unavailable.
+    """
+    title = item["title"]
+    genres = ", ".join(item.get("genres") or [])[:200]
+    tags = ", ".join((item.get("tags") or [])[:8])[:200]
+    synopsis = (item.get("description") or "").strip()[:500]
+    user_prompt = (
+        f"Title: {title}\n"
+        f"Genres & Tags: {genres} | {tags}\n"
+        f"Synopsis: {synopsis}\n\n"
+        f"User request: {user_query}\n"
+        f"Verification question: {filter_question}\n"
+        "Answer (Y/N):"
+    )
+    messages = [
+        {"role": "system", "content": _JEFF_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+    options = {"options": {"num_ctx": 4096, "num_predict": 1}}
+    response = client.chat.completions.create(
+        model=settings.ollama_model,
+        messages=messages,
+        max_tokens=1,
+        temperature=0.0,
+        logprobs=True,
+        top_logprobs=5,
+        extra_body=options,
+    )
+    choice = response.choices[0]
+
+    top: list[Any] = []
+    try:
+        top = choice.logprobs.content[0].top_logprobs
+    except (AttributeError, TypeError, IndexError):
+        top = []
+
+    if top:
+        lp = {t.token: t.logprob for t in top if getattr(t, "logprob", None) is not None}
+        ly = max((lp[t] for t in _YES_TOKENS if t in lp), default=None)
+        ln = max((lp[t] for t in _NO_TOKENS if t in lp), default=None)
+        if ly is not None and ln is not None:
+            # Numerically stable softmax: P(Yes) = 1 / (1 + exp(ln - ly)).
+            return 1.0 / (1.0 + math.exp(ln - ly))
+
+    token = (choice.message.content or "").strip().upper()
+    if token.startswith("Y") or token.startswith("O"):
+        return 0.85
+    if token.startswith("N"):
+        return 0.15
+    return 0.50
+
+
+def jev_logit_rerank(
+    client: Any,
+    settings: Settings,
+    user_query: str,
+    filter_question: str,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rerank candidates by a calibrated 1-token Yes/No decision.
+
+    * Each candidate gets ``jev_confidence`` (P(Yes) as a 0-100 int).
+    * The final score is reweighted ``FinalScore × (0.4 + 0.6·P(Yes))``.
+    * A hard gatekeeper drops P(Yes) < 0.25 — unless that would empty the list,
+      in which case the best-ranked survivors are kept instead.
+    """
+    if not candidates:
+        return candidates
+    for item in candidates:
+        p = _jev_p_yes(client, settings, user_query, filter_question, item)
+        item["jev_confidence"] = round(p * 100)
+        item["final_score"] = round(item["final_score"] * (0.4 + 0.6 * p), 4)
+
+    survivors = [c for c in candidates if (c.get("jev_confidence") or 0) >= 25]
+    if not survivors:
+        survivors = candidates  # never return an empty list: keep best-ranked instead
+    survivors.sort(key=lambda c: -c["final_score"])
+    return survivors
+
+
 def _search_new(
-    args: dict[str, Any], db: Any, settings: Settings, query: str = ""
+    args: dict[str, Any],
+    db: Any,
+    settings: Settings,
+    query: str = "",
+    client: Any | None = None,
 ) -> list[dict[str, Any]]:
     # Adult content is often OVA/short format and lives in BOTH anime and manga, so
     # an explicit adult request widens the format/category filters and pins the pool
@@ -508,6 +651,14 @@ def _search_new(
         required = _to_str_list(args.get("required_genres_or_tags"))
         excluded = _to_str_list(args.get("excluded_genres_or_tags"))
         adult_only = False
+
+    filter_question = _resolve_filter_question(args, query)
+    rerank = bool(filter_question) and client is not None
+    target_limit = _clamp_limit(args, 10, 30)
+    # Fetch extra candidates so the gatekeeper has room to drop bad fits and still
+    # fill the requested list.
+    fetch_limit = min(30, max(target_limit * 2, 12)) if rerank else target_limit
+
     rows = db_module.search_new_recommendations(
         db,
         category=category,
@@ -519,7 +670,7 @@ def _search_new(
         only_finished=_to_bool(args.get("only_finished")),
         required=required,
         excluded=excluded,
-        limit=_clamp_limit(args, 10, 30),
+        limit=fetch_limit,
         allow_adult=settings.allow_adult,
         adult_only=adult_only,
     )
@@ -533,7 +684,13 @@ def _search_new(
     if has_query:
         ids = [row["media_id"] for row in rows]
         similarities = embeddings_module.query_similarities(db, semantic, ids, settings)
-    return rank_candidates(rows, similarities, has_query, settings)
+
+    ranked = rank_candidates(rows, similarities, has_query, settings)
+    if rerank:
+        print(f"→ logit reranking ({len(ranked)} candidates)…", file=sys.stderr)
+        ranked = jev_logit_rerank(client, settings, query, filter_question, ranked)
+        ranked = ranked[:target_limit]
+    return ranked
 
 
 def _strip_fences(text: str) -> str:
@@ -689,9 +846,14 @@ def _render_search(
             sim = item["semantic_similarity"]
             meta += f" · {i18n.t(lang, 'sim')} {_heat(sim, 0.0, 1.0, f'{sim:.2f}')}"
         score = item["final_score"]
+        score_text = _heat(score, 0.0, 1.0, f"{score:.2f}")
+        badge = ""
+        if item.get("jev_confidence") is not None:
+            p = item["jev_confidence"] / 100.0
+            badge = f" · [Match: {_heat(p, 0.0, 1.0, str(item['jev_confidence']) + '%')}]"
         lines.append(
             f"{index}. {anilist_link(item['title'], item.get('type'), item.get('media_id'))} "
-            f"— {meta} · {i18n.t(lang, 'score')} {_heat(score, 0.0, 1.0, f'{score:.2f}')}"
+            f"— {meta} · {i18n.t(lang, 'score')} {score_text}{badge}"
         )
         why = annotations.get(index)
         if why:
@@ -871,12 +1033,12 @@ def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
 
 
 def execute_tool(
-    name: str, args: dict[str, Any], settings: Settings, query: str = ""
+    name: str, args: dict[str, Any], settings: Settings, query: str = "", client: Any | None = None
 ) -> str | list[dict[str, Any]]:
     connection = db_module.connect(settings.db_path)
     try:
         if name == "search_new_recommendations":
-            return _search_new(args, connection, settings, query)
+            return _search_new(args, connection, settings, query, client=client)
         if name == "find_unseen_franchise_entries":
             return _franchise(args, connection, settings)
         if name == "find_cross_media_adaptations":
@@ -1039,7 +1201,7 @@ def run_agent(
         for call_id, name, args in calls:
             if on_tool_call is not None:
                 on_tool_call(name, args)
-            result = execute_tool(name, args, settings, query)
+            result = execute_tool(name, args, settings, query, client=client)
             if name == "search_new_recommendations" and isinstance(result, list):
                 if not result:
                     content = i18n.t(settings.language, "no_results")
