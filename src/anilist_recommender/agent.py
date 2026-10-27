@@ -192,14 +192,16 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "2. Never invent a title — recommend ONLY what a tool returns.\n"
         "3. Call each tool ONCE with your best parameters, then write the final answer. Do not "
         "re-call the same tool just to tweak filters.\n"
-        "4. OUTPUT SIZE (critical):\n"
-        "   - <=5 results: analyze each one in depth — cite graph_score, positive_sources, "
+        "4. OUTPUT SIZE (search_new_recommendations only, which returns JSON):\n"
+        "   - <=5 results: analyze each in depth — cite graph_score, positive_sources, "
         "negative_warnings, exact format and length.\n"
         "   - >5 results: full Markdown table or exhaustive list, never truncate.\n"
-        "5. Presentation: find_unseen_franchise_entries and find_cross_media_adaptations "
-        "return a ready-made Markdown list — RELAY it as-is. Never describe the JSON "
-        "structure or invent numbers.\n"
-        "6. Be direct, analytical, zero filler.\n"
+        "5. Presentation (franchise/cross-media tools): they return a ready-made Markdown "
+        "list — RELAY the ENTIRE list verbatim (every single line, drop none, truncate none), "
+        "then at most ONE short closing sentence. Never describe the JSON structure, never "
+        "invent numbers.\n"
+        "6. Be direct, analytical, zero filler: no generic advice like 'regardez les résumés "
+        "ou commentaires'.\n"
         "7. If a tool returns 'EMPTY_RESULT — …', output EXACTLY the French text after "
         "'EMPTY_RESULT — ' and nothing else. Never improvise, never suggest filters, never "
         "mention external websites (AniList, MyAnimeList, Kitsu, etc.).\n"
@@ -307,7 +309,7 @@ def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
         return f"{chapters} chap"
     if volumes:
         return f"{volumes} vol"
-    return "?"
+    return ""
 
 
 def _relation_summary(
