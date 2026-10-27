@@ -3,8 +3,10 @@
 Agent local en ligne de commande qui recommande des **animés, mangas, light novels,
 manhwas et manhuas** à partir de ton profil AniList (notes, statuts, favoris), du
 **graphe collaboratif de recommandations**, du **graphe relationnel** (suites, OAV,
-films, adaptations anime↔manga/LN) et d'une **recherche vectorielle locale**. La
-synthèse est produite par un **LLM local (Ollama)** via *tool calling* strict.
+films, adaptations anime↔manga/LN) et d'une **recherche vectorielle locale**. Un
+**LLM local (Ollama)** sélectionne l'outil adapté ; la sortie — triée par affinité
+avec étoiles, statuts localisés et une phrase de « pourquoi » par proposition — est
+affichée telle quelle.
 
 > Stack minimale : `httpx` · `sqlite3` + `sqlite-vec` · `sentence-transformers` (CPU)
 > · `pydantic` + `openai` · `typer` + `rich`. **Aucun** LangChain / LlamaIndex / ChromaDB.
@@ -65,6 +67,33 @@ uv run anilist-rec ask "Conseille-moi un anime psychologique de moins de 25 épi
 
 # 5. Mode conversationnel
 uv run anilist-rec chat
+
+# Ajoute -v pour voir les appels d'outils du LLM (routing + paramètres) :
+uv run anilist-rec ask -v "conseille-moi un thriller psychologique"
+```
+
+Exemple de sortie `ask` (recherche) :
+
+```
+5 recommandations (triées par affinité) :
+
+1. Neon Genesis Evangelion — TV · 26 eps · sim 0.78 · score 0.82
+   → Découvrez des combats intenses et des réflexions profondes sur l'existence…
+   ⚠ Code Geass: Fukkatsu no Lelouch (COMPLETED, -1.4, rating: 15)
+2. Texhnolyze — TV · 22 eps · sim 0.80 · score 0.67
+   → Plongez dans une société dystopique et cyberpunk…
+```
+
+Et une sortie « suite / adaptation » (liste groupée par franchise, sans annotation) :
+
+```
+15 mangas/LN à lire (triés par affinité) :
+
+- Chainsaw Man — MANGA · 232 chap · terminé · note 84 · ⭐⭐⭐⭐
+  ↳ suite de : Chainsaw Man – The Movie: Reze Arc
+Rascal Does Not Dream of Bunny Girl Senpai — ⭐⭐⭐⭐ affinité · 5 titres
+  • Rascal Does Not Dream of Bunny Girl Senpai — NOVEL · 6 chap · terminé · note 86
+  • Rascal Does Not Dream of Petite Devil Kohai — NOVEL · 6 chap · terminé · note 82
 ```
 
 ---
@@ -156,12 +185,12 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
    pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
 5. **Agent** (`agent.py`) — 3 outils (`search_new_recommendations`,
    `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`.
-   Le LLM **sélectionne l'outil + ses paramètres**, puis le Markdown est affiché tel quel
-   (aucune re-synthèse globale). Pour la **recherche** (« conseille-moi »), une **2ᵉ passe
-   annotée** fait écrire au LLM une phrase de *pourquoi* par proposition, uniquement à partir
-   des données fournies (genres, tags, œuvres proches) — avec repli automatique sur les
-   sources collaboratives si le modèle échoue. Les titres/formats restent rendus par le code,
-   jamais inventés par le modèle.
+   Le LLM **sélectionne l'outil + ses paramètres**, puis la sortie est affichée telle quelle
+   (aucune re-synthèse globale — source de toutes les erreurs passées). Pour la **recherche**
+   (« conseille-moi »), une **2ᵉ passe annotée** fait écrire au LLM une phrase de *pourquoi*
+   par proposition, ancrée au **synopsis** (plus genres/tags/œuvres proches), avec repli
+   automatique sur les sources collaboratives si le modèle échoue. Les titres/formats/notes
+   restent rendus par le code, jamais inventés par le modèle.
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 
