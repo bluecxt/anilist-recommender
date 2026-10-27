@@ -431,10 +431,22 @@ def find_unseen_franchise_entries(
     if not include_unreleased:
         sql += " AND (mr.target_status IS NULL OR mr.target_status != 'NOT_YET_RELEASED')"
 
+    fetch_limit = min(max(limit * 3, limit), 300)
     sql += " ORDER BY ul.affinity_weight DESC, mr.target_score DESC LIMIT ?"
-    params.append(limit)
+    params.append(fetch_limit)
 
-    return [dict(row) for row in db.execute(sql, params).fetchall()]
+    # De-duplicate targets (same sequel reachable from several sources) keeping
+    # the highest-affinity source, then cap at the requested limit.
+    seen: set[int] = set()
+    results: list[dict[str, Any]] = []
+    for row in db.execute(sql, params).fetchall():
+        if row["target_id"] in seen:
+            continue
+        seen.add(row["target_id"])
+        results.append(dict(row))
+        if len(results) >= limit:
+            break
+    return results
 
 
 # --- Tool 3: find_cross_media_adaptations ----------------------------------------------
@@ -449,7 +461,7 @@ def find_cross_media_adaptations(
     limit: int = 15,
 ) -> list[dict[str, Any]]:
     if direction == "ANIME_TO_PRINT":
-        # My anime works adapted from a print source (manga/LN).
+        # My anime works whose SOURCE material is a manga/LN (`anime --SOURCE--> print`).
         sql = """
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
@@ -458,12 +470,13 @@ def find_cross_media_adaptations(
         JOIN user_list ul ON ul.media_id = mr.source_id
         JOIN media m ON m.id = mr.source_id
         WHERE m.type = 'ANIME'
-          AND mr.relation_type = 'ADAPTATION'
+          AND mr.relation_type = 'SOURCE'
           AND mr.target_type = 'MANGA'
           AND ul.status IN ('COMPLETED','CURRENT','PAUSED')
           AND mr.target_id NOT IN (SELECT media_id FROM user_list WHERE status = 'COMPLETED')
         """
     else:  # PRINT_TO_ANIME
+        # My print works whose ADAPTATION is an anime (`print --ADAPTATION--> anime`).
         sql = """
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
@@ -472,7 +485,7 @@ def find_cross_media_adaptations(
         JOIN user_list ul ON ul.media_id = mr.source_id
         JOIN media m ON m.id = mr.source_id
         WHERE m.type = 'MANGA'
-          AND mr.relation_type = 'SOURCE'
+          AND mr.relation_type = 'ADAPTATION'
           AND mr.target_type = 'ANIME'
           AND ul.status IN ('COMPLETED','CURRENT','PAUSED')
           AND mr.target_id NOT IN (SELECT media_id FROM user_list WHERE status = 'COMPLETED')

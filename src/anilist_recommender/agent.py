@@ -68,9 +68,10 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "find_unseen_franchise_entries",
             "description": (
-                "Find sequels, OVAs, movies, side-stories and spin-offs of works the user "
-                "already watched/read but whose follow-ups they have NOT completed. Use for "
-                "'what sequels/OVAs/films am I missing?' audits."
+                "Find sequels, OVAs, movies, side-stories and spin-offs IN THE SAME MEDIUM as "
+                "works the user already watched/read, whose follow-ups they have NOT completed. "
+                "For a continuation that SWITCHES medium (anime → manga/LN), use "
+                "find_cross_media_adaptations instead."
             ),
             "parameters": {
                 "type": "object",
@@ -102,9 +103,9 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "find_cross_media_adaptations",
             "description": (
-                "Bridge anime <-> print. ANIME_TO_PRINT: animes the user finished/liked that "
-                "have an original manga/LN to read the rest. PRINT_TO_ANIME: manga/LN the user "
-                "read that have an anime adaptation."
+                "Bridge anime <-> print. ANIME_TO_PRINT: an anime whose SOURCE material is a "
+                "manga/LN — read the source to continue the story past the anime. "
+                "PRINT_TO_ANIME: a manga/LN the user read that has an anime adaptation."
             ),
             "parameters": {
                 "type": "object",
@@ -139,11 +140,15 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "running fully offline. You reason only from the local database and the taste profile "
         "below, across every medium: TV, movies, OVAs, manga, light novels, Korean manhwa and "
         "Chinese manhua.\n\n"
-        "TOOLS:\n"
-        "- search_new_recommendations: discover NEW titles (planning + graph).\n"
-        "- find_unseen_franchise_entries: sequels/OVAs/movies/side-stories/spin-offs the user "
-        "has not finished yet.\n"
-        "- find_cross_media_adaptations: bridge anime <-> manga/LN (source/adaptation).\n\n"
+        "TOOLS (pick the right one):\n"
+        "- search_new_recommendations: discover NEW titles to watch/read.\n"
+        "- find_unseen_franchise_entries: continuations WITHIN THE SAME MEDIUM (anime "
+        "S2/OVA/movie, manga sequel) the user has not finished.\n"
+        "- find_cross_media_adaptations: continuations that CHANGE MEDIUM — \"the rest is only "
+        "in manga/LN\" → ANIME_TO_PRINT; \"this manga/LN has an anime\" → PRINT_TO_ANIME.\n"
+        "ROUTING: \"suite/fin disponible en manga ou light novel\" → "
+        "find_cross_media_adaptations(direction=ANIME_TO_PRINT). \"suite/OAV/film de mes animes\" → "
+        "find_unseen_franchise_entries(source_type=ANIME).\n\n"
         "STRICT RULES:\n"
         "1. Never invent a title — recommend ONLY what a tool returns.\n"
         "2. OUTPUT SIZE (critical):\n"
