@@ -117,6 +117,7 @@ username = "ton-pseudo"            # fixe le profil AniList
 # ollama_model = "llama3.1:8b"
 # embedding_model = "intfloat/multilingual-e5-small"
 # max_graph_sources = 60
+# title_language = "english"       # english | romaji | native (japonais)
 ```
 
 Fichier cherché dans l'ordre (premier trouvé) : `$ANILIST_CONFIG` → `./config.toml`
@@ -134,6 +135,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
 | `ANILIST_REQUEST_INTERVAL` | `0.85` | Intervalle minimal (anti-burst) entre deux requêtes (s) ; le quota est piloté par les headers `X-RateLimit-*` |
+| `ANILIST_TITLE_LANGUAGE` | `english` | Langue d'affichage des titres : `english` \| `romaji` \| `native` (japonais), avec repli automatique |
 
 ---
 
@@ -151,8 +153,10 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 4. **Recherche hybride** (`db.py` + `embeddings.py`) — filtres SQL (catégorie, longueur,
    pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.55 + Sim·0.35 + PlanningBonus·0.10`.
 5. **Agent** (`agent.py`) — 3 outils (`search_new_recommendations`,
-   `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`,
-   sortie dynamique (analyse détaillée ≤ 5, tableau complet au-delà).
+   `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`.
+   Chaque outil renvoie du **Markdown déjà mis en forme** (liste groupée par franchise
+   pour les suites, tableau pour la recherche), trié par affinité avec étoiles, statuts
+   localisés et titres dans la langue configurée — le LLM n'a plus qu'à relayer.
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 

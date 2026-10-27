@@ -21,7 +21,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from . import agent, db as db_module, embeddings, graphql_client as gc, scoring
-from .config import get_settings, Settings
+from .config import get_settings, Settings, pick_title
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -194,9 +194,21 @@ def _require_synced(settings: Settings) -> None:
     if not settings.db_path.exists() or not settings.taste_profile_path.exists():
         console.print("[red]No synced data. Run `anilist-rec sync <username>` first.[/red]")
         raise typer.Exit(1)
+    # Guard against a stale DB from an older schema (e.g. pre title_native).
+    try:
+        connection = db_module.connect(settings.db_path)
+        try:
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(media)")}
+        finally:
+            connection.close()
+    except Exception:
+        return  # let the actual command surface any real DB error
+    if "title_native" not in columns:
+        console.print("[red]Database schema is outdated — run `anilist-rec sync` again.[/red]")
+        raise typer.Exit(1)
 
 
-def _candidate_table(title: str, candidates: list[dict]) -> Table:
+def _candidate_table(title: str, candidates: list[dict], language: str = "english") -> Table:
     table = Table(title=title)
     table.add_column("#", justify="right")
     table.add_column("Title")
@@ -207,7 +219,7 @@ def _candidate_table(title: str, candidates: list[dict]) -> Table:
     for index, candidate in enumerate(candidates, start=1):
         table.add_row(
             str(index),
-            candidate["title_romaji"] or candidate["title_english"] or f"#{candidate['media_id']}",
+            pick_title(candidate, language),
             candidate["type"],
             candidate["format"] or "—",
             f"{candidate['graph_score']:.2f}",
@@ -274,8 +286,8 @@ def profile() -> None:
             anti_table.add_row(item["name"], str(item["count"]))
         console.print(anti_table)
 
-    console.print(_candidate_table("Top 10 latent — ANIME", top_anime))
-    console.print(_candidate_table("Top 10 latent — MANGA / LN / Manhwa", top_manga))
+    console.print(_candidate_table("Top 10 latent — ANIME", top_anime, settings.title_language))
+    console.print(_candidate_table("Top 10 latent — MANGA / LN / Manhwa", top_manga, settings.title_language))
 
 
 # --------------------------------------------------------------------------- sequels
@@ -334,10 +346,26 @@ def sequels(
     for index, row in enumerate(rows, start=1):
         table.add_row(
             str(index),
-            row["source_title_romaji"] or row["source_title_english"] or f"#{row['source_id']}",
+            pick_title(
+                {
+                    "id": row["source_id"],
+                    "title_romaji": row["source_title_romaji"],
+                    "title_english": row["source_title_english"],
+                    "title_native": row["source_title_native"],
+                },
+                settings.title_language,
+            ),
             f"{row['parent_weight']:+.2f}",
             row["relation_type"],
-            row["target_title"] or "?",
+            pick_title(
+                {
+                    "id": row["target_id"],
+                    "title_romaji": row["target_title_romaji"],
+                    "title_english": row["target_title_english"],
+                    "title_native": row["target_title_native"],
+                },
+                settings.title_language,
+            ),
             row["target_format"] or "—",
             row["target_status"] or "—",
             _target_length(row),
@@ -374,6 +402,7 @@ def config() -> None:
     table.add_row("embedding_model", settings.embedding_model)
     table.add_row("max_graph_sources", str(settings.max_graph_sources))
     table.add_row("request_interval", str(settings.request_interval))
+    table.add_row("title_language", settings.title_language)
     console.print(table)
 
 

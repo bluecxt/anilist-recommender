@@ -10,6 +10,10 @@
 # Your AniList username. Fix it here so you can just run `anilist-rec sync`.
 username = "YOUR_ANILIST_USERNAME"
 
+# Preferred display language for titles. AniList exposes english / romaji /
+# native (Japanese script), any of which may be empty — we fall back automatically.
+# title_language = "english"   # english | romaji | native
+
 # Where the local database + taste profile live.
 # data_dir = "data"
 

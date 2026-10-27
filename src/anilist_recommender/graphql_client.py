@@ -32,7 +32,7 @@ class AniListError(RuntimeError):
 MEDIA_FIELDS = """
   id
   type
-  title { romaji english }
+  title { romaji english native }
   format
   status
   episodes
@@ -60,7 +60,7 @@ RELATION_NODE_FIELDS = """
   chapters
   volumes
   averageScore
-  title { romaji english }
+  title { romaji english native }
 """
 
 # Reduced `Media` fragment for `mediaRecommendation` targets. Drops fields never
@@ -69,7 +69,7 @@ RELATION_NODE_FIELDS = """
 RECOMMENDATION_MEDIA_FIELDS = """
   id
   type
-  title { romaji english }
+  title { romaji english native }
   format
   status
   episodes
@@ -411,6 +411,7 @@ def normalize_media(raw: dict[str, Any]) -> dict[str, Any]:
         "type": raw.get("type"),
         "title_romaji": title.get("romaji"),
         "title_english": title.get("english"),
+        "title_native": title.get("native"),
         "format": raw.get("format"),
         "status": raw.get("status"),
         "episodes": raw.get("episodes"),
@@ -442,6 +443,7 @@ def normalize_relation_node(raw: dict[str, Any]) -> dict[str, Any]:
         "average_score": raw.get("averageScore"),
         "title_romaji": title.get("romaji"),
         "title_english": title.get("english"),
+        "title_native": title.get("native"),
     }
 
 

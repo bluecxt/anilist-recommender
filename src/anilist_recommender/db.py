@@ -22,6 +22,7 @@ CREATE TABLE media (
   type TEXT NOT NULL,
   title_romaji TEXT,
   title_english TEXT,
+  title_native TEXT,
   format TEXT,
   status TEXT,
   episodes INTEGER,
@@ -76,7 +77,9 @@ CREATE TABLE media_relations (
   target_format TEXT,
   target_country TEXT,
   target_status TEXT,
-  target_title TEXT,
+  target_title_romaji TEXT,
+  target_title_english TEXT,
+  target_title_native TEXT,
   target_episodes INTEGER,
   target_chapters INTEGER,
   target_volumes INTEGER,
@@ -137,8 +140,8 @@ def reset_schema(db: sqlite3.Connection, embedding_dim: int) -> None:
 
 
 _MEDIA_COLUMNS = (
-    "id, type, title_romaji, title_english, format, status, episodes, duration, chapters, "
-    "volumes, country_of_origin, average_score, popularity, genres, tags, studios, "
+    "id, type, title_romaji, title_english, title_native, format, status, episodes, duration, "
+    "chapters, volumes, country_of_origin, average_score, popularity, genres, tags, studios, "
     "description, prequel_id, parent_id, is_root"
 )
 
@@ -149,6 +152,7 @@ def _media_values(media: dict[str, Any]) -> tuple[Any, ...]:
         media.get("type"),
         media.get("title_romaji"),
         media.get("title_english"),
+        media.get("title_native"),
         media.get("format"),
         media.get("status"),
         media.get("episodes"),
@@ -187,7 +191,7 @@ def persist(
     for media in media_rows.values():
         db.execute(
             f"INSERT OR REPLACE INTO media ({_MEDIA_COLUMNS}) "
-            f"VALUES ({','.join('?' * 20)})",
+            f"VALUES ({','.join('?' * 21)})",
             _media_values(media),
         )
 
@@ -221,9 +225,10 @@ def persist(
     for row in relation_rows:
         db.execute(
             "INSERT OR REPLACE INTO media_relations (source_id, target_id, relation_type, "
-            "target_type, target_format, target_country, target_status, target_title, "
+            "target_type, target_format, target_country, target_status, "
+            "target_title_romaji, target_title_english, target_title_native, "
             "target_episodes, target_chapters, target_volumes, target_score) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row["source_id"],
                 row["target_id"],
@@ -232,7 +237,9 @@ def persist(
                 row["target_format"],
                 row["target_country"],
                 row["target_status"],
-                row["target_title"],
+                row["target_title_romaji"],
+                row["target_title_english"],
+                row["target_title_native"],
                 row["target_episodes"],
                 row["target_chapters"],
                 row["target_volumes"],
@@ -274,6 +281,7 @@ SELECT
   m.type,
   m.title_romaji,
   m.title_english,
+  m.title_native,
   m.format,
   m.status AS release_status,
   m.episodes,
@@ -403,6 +411,7 @@ def find_unseen_franchise_entries(
     sql = """
     SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
            m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
+           m.title_native AS source_title_native,
            m.format AS source_format, m.type AS source_type
     FROM media_relations mr
     JOIN user_list ul ON ul.media_id = mr.source_id
@@ -465,6 +474,7 @@ def find_cross_media_adaptations(
         sql = """
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
+               m.title_native AS source_title_native,
                m.format AS source_format
         FROM media_relations mr
         JOIN user_list ul ON ul.media_id = mr.source_id
@@ -480,6 +490,7 @@ def find_cross_media_adaptations(
         sql = """
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
+               m.title_native AS source_title_native,
                m.format AS source_format
         FROM media_relations mr
         JOIN user_list ul ON ul.media_id = mr.source_id

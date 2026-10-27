@@ -15,7 +15,7 @@ from openai import OpenAI
 
 from . import db as db_module
 from . import embeddings as embeddings_module
-from .config import Settings
+from .config import Settings, pick_title
 
 MAX_TOOL_ROUNDS = 8
 
@@ -192,22 +192,17 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "2. Never invent a title — recommend ONLY what a tool returns.\n"
         "3. Call each tool ONCE with your best parameters, then write the final answer. Do not "
         "re-call the same tool just to tweak filters.\n"
-        "4. OUTPUT SIZE (search_new_recommendations only, which returns JSON):\n"
-        "   - <=5 results: analyze each in depth — cite graph_score, positive_sources, "
-        "negative_warnings, exact format and length.\n"
-        "   - >5 results: full Markdown table or exhaustive list, never truncate.\n"
-        "5. Presentation (franchise/cross-media tools): they return a ready-made Markdown "
-        "list — RELAY the ENTIRE list verbatim (every single line, drop none, truncate none), "
-        "then at most ONE short closing sentence. Never describe the JSON structure, never "
-        "invent numbers.\n"
-        "6. Be direct, analytical, zero filler: no generic advice like 'regardez les résumés "
+        "4. Every tool returns ready-made Markdown (a list or a table). RELAY it verbatim — "
+        "every line, drop none, truncate none, keep the exact order — then at most ONE short "
+        "closing sentence in French. Never describe the data structure or invent numbers.\n"
+        "5. Be direct, analytical, zero filler: no generic advice like 'regardez les résumés "
         "ou commentaires'.\n"
-        "7. If a tool returns 'EMPTY_RESULT — …', output EXACTLY the French text after "
+        "6. If a tool returns 'EMPTY_RESULT — …', output EXACTLY the French text after "
         "'EMPTY_RESULT — ' and nothing else. Never improvise, never suggest filters, never "
         "mention external websites (AniList, MyAnimeList, Kitsu, etc.).\n"
-        "8. Keep filters minimal: leave min_user_score and only_finished_target unset unless "
+        "7. Keep filters minimal: leave min_user_score and only_finished_target unset unless "
         "the user explicitly asks for 'mes préférés' (high score) or 'un LN/manga terminé'.\n"
-        "9. Never recommend external platforms or websites — your answer comes ONLY from the "
+        "8. Never recommend external platforms or websites — your answer comes ONLY from the "
         "local tools' results.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
@@ -226,6 +221,7 @@ def rank_candidates(
     rows: list[dict[str, Any]],
     similarities: dict[int, float],
     has_query: bool,
+    language: str = "english",
 ) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -248,9 +244,10 @@ def rank_candidates(
         )
         ranked.append(
             {
-                "title": row["title_romaji"] or row["title_english"] or f"#{row['media_id']}",
+                "title": pick_title(row, language),
                 "title_romaji": row["title_romaji"],
                 "title_english": row["title_english"],
+                "title_native": row["title_native"],
                 "type": row["type"],
                 "format": row["format"],
                 "country": row["country_of_origin"],
@@ -279,7 +276,42 @@ def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
     return max(1, min(limit, maximum))
 
 
-def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[str, Any]]:
+def _md_cell(text: Any) -> str:
+    return str(text).replace("|", "/").replace("\n", " ")
+
+
+def _format_search_table(items: list[dict[str, Any]], has_query: bool) -> str:
+    lines = [f"{len(items)} résultats (triés par note finale) :\n"]
+    head = "| # | Titre | Format | Graph"
+    sep = "|---|-------|--------|-------"
+    if has_query:
+        head += " | Sim"
+        sep += "|-----"
+    head += " | Final |"
+    sep += "|-------|"
+    lines.append(head)
+    lines.append(sep)
+    for index, item in enumerate(items, start=1):
+        cell = (
+            f"| {index} | {_md_cell(item['title'])} | "
+            f"{_md_cell(item['format']) or '—'} · {item['length']} | {item['graph_score']:.2f}"
+        )
+        if has_query:
+            cell += f" | {item['semantic_similarity']:.2f}"
+        cell += f" | {item['final_score']:.2f} |"
+        lines.append(cell)
+    if len(items) <= 5:
+        for item in items:
+            positives = item.get("positive_sources") or []
+            if positives:
+                lines.append(f"- **{item['title']}** · + {', '.join(positives[:3])}")
+            warnings = item.get("negative_warnings") or []
+            if warnings:
+                lines.append(f"  ⚠ {', '.join(warnings[:2])}")
+    return "\n".join(lines)
+
+
+def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> str:
     rows = db_module.search_new_recommendations(
         db,
         category=args.get("category") or "ANIME",
@@ -299,7 +331,10 @@ def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[
     if has_query:
         ids = [row["media_id"] for row in rows]
         similarities = embeddings_module.query_similarities(db, query, ids, settings)
-    return rank_candidates(rows, similarities, has_query)
+    ranked = rank_candidates(rows, similarities, has_query, settings.title_language)
+    if not ranked:
+        return "EMPTY_RESULT — Aucun résultat avec ces filtres."
+    return _format_search_table(ranked, has_query)
 
 
 def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
@@ -312,32 +347,147 @@ def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
     return ""
 
 
-def _relation_summary(
-    source_title: Any, target_title: Any, relation_type: Any, target_format: Any,
-    status: Any, episodes: Any, chapters: Any, volumes: Any, score: Any,
-) -> str:
-    bits = [b for b in (relation_type, target_format, _fmt_len(episodes, chapters, volumes), status) if b]
-    summary = f"{source_title} → {target_title} ({' · '.join(bits)}"
-    if score is not None:
-        summary += f" · score {score}"
-    return summary + ")"
+_STATUS_FR = {
+    "FINISHED": "terminé",
+    "RELEASING": "en cours",
+    "NOT_YET_RELEASED": "à paraître",
+    "HIATUS": "en pause",
+    "CANCELLED": "annulé",
+}
+
+_RELATION_FR = {
+    "SEQUEL": "suite",
+    "PREQUEL": "préquelle",
+    "SIDE_STORY": "histoire annexe",
+    "SPIN_OFF": "spin-off",
+    "ADAPTATION": "adaptation",
+    "SOURCE": "source",
+    "PARENT": "parent",
+    "SUMMARY": "résumé",
+    "ALTERNATIVE": "alternative",
+    "CHARACTER": "spin-off perso",
+    "OTHER": "lié",
+}
 
 
-def _relation_summary_from_row(row: dict[str, Any]) -> str:
-    return _relation_summary(
-        row.get("source_title_romaji") or row.get("source_title_english"),
-        row.get("target_title"),
-        row.get("relation_type"),
-        row.get("target_format"),
-        row.get("target_status"),
-        row.get("target_episodes"),
-        row.get("target_chapters"),
-        row.get("target_volumes"),
-        row.get("target_score"),
+def _status_label(status: Any) -> str:
+    return _STATUS_FR.get(status, status or "")
+
+
+def _stars(weight: Any) -> str:
+    w = float(weight or 0.0)
+    if w < 0:
+        return "☆"
+    if w >= 2.0:
+        return "⭐⭐⭐⭐⭐"
+    if w >= 1.2:
+        return "⭐⭐⭐⭐"
+    if w >= 0.5:
+        return "⭐⭐⭐"
+    if w >= 0.1:
+        return "⭐⭐"
+    return "⭐"
+
+
+def _target_title(row: dict[str, Any], language: str) -> str:
+    return pick_title(
+        {
+            "id": row.get("target_id"),
+            "title_romaji": row.get("target_title_romaji"),
+            "title_english": row.get("target_title_english"),
+            "title_native": row.get("target_title_native"),
+        },
+        language,
     )
 
 
-def _franchise(args: dict[str, Any], db: Any) -> str:
+def _source_title(row: dict[str, Any], language: str) -> str:
+    return pick_title(
+        {
+            "id": row.get("source_id"),
+            "title_romaji": row.get("source_title_romaji"),
+            "title_english": row.get("source_title_english"),
+            "title_native": row.get("source_title_native"),
+        },
+        language,
+    )
+
+
+def _target_meta(row: dict[str, Any]) -> str:
+    bits = [
+        b
+        for b in (
+            row.get("target_format"),
+            _fmt_len(row.get("target_episodes"), row.get("target_chapters"), row.get("target_volumes")),
+            _status_label(row.get("target_status")),
+        )
+        if b
+    ]
+    meta = " · ".join(bits)
+    score = row.get("target_score")
+    if score is not None:
+        meta += f" · note {score}"
+    return meta
+
+
+def _group_by_source(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    index: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        source_id = row.get("source_id")
+        if source_id not in index:
+            index[source_id] = {"source": row, "targets": []}
+            groups.append(index[source_id])
+        index[source_id]["targets"].append(row)
+    return groups
+
+
+def _format_franchise(rows: list[dict[str, Any]], language: str) -> str:
+    groups = _group_by_source(rows)
+    lines = [f"{len(rows)} suites (triées par affinité) :\n"]
+    for group in groups:
+        source = group["source"]
+        targets = group["targets"]
+        src_title = _source_title(source, language)
+        stars = _stars(source.get("parent_weight"))
+        if len(targets) == 1:
+            target = targets[0]
+            rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
+            lines.append(f"- **{_target_title(target, language)}** — {rel} · {_target_meta(target)} · {stars}")
+            lines.append(f"  ↳ depuis : {src_title}")
+        else:
+            lines.append(f"**{src_title}** — {stars} affinité")
+            for target in targets:
+                rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
+                lines.append(f"  • {_target_title(target, language)} — {rel} · {_target_meta(target)}")
+    return "\n".join(lines)
+
+
+def _format_cross_media(rows: list[dict[str, Any]], language: str, direction: str) -> str:
+    groups = _group_by_source(rows)
+    link = "suite de" if direction == "ANIME_TO_PRINT" else "adapté de"
+    if direction == "ANIME_TO_PRINT":
+        header = f"{len(rows)} mangas/LN à lire (triés par affinité) :"
+    else:
+        header = f"{len(rows)} adaptations anime (triées par affinité) :"
+    lines = [header + "\n"]
+    for group in groups:
+        source = group["source"]
+        targets = group["targets"]
+        src_title = _source_title(source, language)
+        stars = _stars(source.get("parent_weight"))
+        if len(targets) == 1:
+            target = targets[0]
+            lines.append(f"- **{_target_title(target, language)}** — {_target_meta(target)} · {stars}")
+            lines.append(f"  ↳ {link} : {src_title}")
+        else:
+            lines.append(f"**{src_title}** — {stars} affinité · {len(targets)} titres")
+            for target in targets:
+                lines.append(f"  • {_target_title(target, language)} — {_target_meta(target)}")
+    return "\n".join(lines)
+
+
+def _franchise(args: dict[str, Any], db: Any, settings: Settings) -> str:
     rows = db_module.find_unseen_franchise_entries(
         db,
         source_type=args.get("source_type") or "ANIME",
@@ -349,18 +499,18 @@ def _franchise(args: dict[str, Any], db: Any) -> str:
     )
     if not rows:
         return "EMPTY_RESULT — Aucune suite trouvée avec ces filtres."
-    lines = [_relation_summary_from_row(r) for r in rows]
-    return f"{len(lines)} unseen franchise entries (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
+    return _format_franchise(rows, settings.title_language)
 
 
-def _adaptations(args: dict[str, Any], db: Any) -> str:
+def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
     fmt = (args.get("target_print_format") or "ANY").strip().upper()
     if fmt in ("LIGHT_NOVEL", "LN"):
         fmt = "NOVEL"
+    direction = args.get("direction") or "ANIME_TO_PRINT"
     min_score = int(args.get("min_user_score") or 0)
     rows = db_module.find_cross_media_adaptations(
         db,
-        direction=args.get("direction") or "ANIME_TO_PRINT",
+        direction=direction,
         target_print_format=fmt,
         min_user_score=min_score,
         only_finished_target=bool(args.get("only_finished_target")),
@@ -368,8 +518,7 @@ def _adaptations(args: dict[str, Any], db: Any) -> str:
     )
     if not rows:
         return "EMPTY_RESULT — Aucun résultat avec ces filtres."
-    lines = [_relation_summary_from_row(r) for r in rows]
-    return f"{len(lines)} cross-media links (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
+    return _format_cross_media(rows, settings.title_language, direction)
 
 
 def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | list[dict[str, Any]]:
@@ -378,9 +527,9 @@ def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | l
         if name == "search_new_recommendations":
             return _search_new(args, connection, settings)
         if name == "find_unseen_franchise_entries":
-            return _franchise(args, connection)
+            return _franchise(args, connection, settings)
         if name == "find_cross_media_adaptations":
-            return _adaptations(args, connection)
+            return _adaptations(args, connection, settings)
         return [{"error": f"unknown tool: {name}"}]
     finally:
         connection.close()

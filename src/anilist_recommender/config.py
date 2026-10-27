@@ -30,6 +30,27 @@ EMBEDDING_DIMS: dict[str, int] = {
     "BAAI/bge-m3": 1024,
 }
 
+# AniList exposes three title variants; any may be null so we fall back.
+TITLE_LANGUAGES = ("english", "romaji", "native")
+
+
+def pick_title(media: dict, language: str = "english") -> str:
+    """Best-effort title in the requested language, with fallbacks.
+
+    ``english`` → English, ``romaji`` → romanized Japanese, ``native`` → Japanese
+    script. Each falls back through the other two before giving up on the id.
+    """
+    order = {
+        "native": ("title_native", "title_romaji", "title_english"),
+        "romaji": ("title_romaji", "title_english", "title_native"),
+        "english": ("title_english", "title_romaji", "title_native"),
+    }.get(language, ("title_english", "title_romaji", "title_native"))
+    for key in order:
+        value = media.get(key)
+        if value:
+            return str(value)
+    return f"#{media.get('id')}"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -51,6 +72,9 @@ class Settings:
     # |affinity_weight|) get their `recommendations` pulled from AniList.
     max_graph_sources: int
     request_interval: float
+
+    # Preferred title language for display: "english" | "romaji" | "native".
+    title_language: str
 
     config_path: Path | None
 
@@ -137,6 +161,12 @@ def get_settings() -> Settings:
     username = _pick(file_cfg, "username", "ANILIST_USERNAME", None)
     username = str(username) if username else None
 
+    title_language = str(
+        _pick(file_cfg, "title_language", "ANILIST_TITLE_LANGUAGE", "english")
+    ).lower()
+    if title_language not in TITLE_LANGUAGES:
+        title_language = "english"
+
     return Settings(
         data_dir=data_dir,
         db_path=data_dir / "anilist_local.db",
@@ -150,5 +180,6 @@ def get_settings() -> Settings:
         embedding_dim=_resolve_embedding_dim(embedding_model),
         max_graph_sources=_pick_int(file_cfg, "max_graph_sources", "ANILIST_MAX_GRAPH_SOURCES", 60),
         request_interval=_pick_float(file_cfg, "request_interval", "ANILIST_REQUEST_INTERVAL", 0.85),
+        title_language=title_language,
         config_path=config_path,
     )
