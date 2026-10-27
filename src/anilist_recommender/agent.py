@@ -549,7 +549,7 @@ def _render_search(
             lines.append(f"   → proche de : {sources}")
         if item.get("negative_warnings"):
             warnings = " · ".join(_format_source(s, language) for s in item["negative_warnings"][:2])
-            lines.append(f"   ⚠ recommandé aussi par {warnings}")
+            lines.append(f"   [red]⚠ recommandé aussi par {warnings}[/red]")
     return "\n".join(lines)
 
 
