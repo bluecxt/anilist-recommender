@@ -158,7 +158,9 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
    `find_unseen_franchise_entries`, `find_cross_media_adaptations`), `num_ctx=8192`.
    Chaque outil renvoie du **Markdown déjà mis en forme** (liste groupée par franchise
    pour les suites, tableau pour la recherche), trié par affinité avec étoiles, statuts
-   localisés et titres dans la langue configurée — le LLM n'a plus qu'à relayer.
+   localisés et titres dans la langue configurée. Le LLM **sélectionne uniquement l'outil
+   et ses paramètres**, puis le Markdown est affiché tel quel — aucune re-synthèse par le
+   modèle (source de toutes les erreurs passées : hallucination, troncature, remplissage).
 
 ### Pourquoi le graphe collaboratif est tiré œuvre par œuvre
 

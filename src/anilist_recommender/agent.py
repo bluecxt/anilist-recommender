@@ -187,23 +187,13 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "asks for its manga/LN/roman → direction=ANIME_TO_PRINT. Use PRINT_TO_ANIME ONLY when the "
         "user names a MANGA/LN they READ and asks for its anime.\n\n"
         "STRICT RULES:\n"
-        "1. LANGUAGE (critical): always answer in FRENCH (the user's language), never in "
-        "English or Chinese — even though the titles are Japanese and the data is English.\n"
-        "2. Never invent a title — recommend ONLY what a tool returns.\n"
-        "3. Call each tool ONCE with your best parameters, then write the final answer. Do not "
-        "re-call the same tool just to tweak filters.\n"
-        "4. Every tool returns ready-made Markdown (a list or a table). RELAY it verbatim — "
-        "every line, drop none, truncate none, keep the exact order — then at most ONE short "
-        "closing sentence in French. Never describe the data structure or invent numbers.\n"
-        "5. Be direct, analytical, zero filler: no generic advice like 'regardez les résumés "
-        "ou commentaires'.\n"
-        "6. If a tool returns 'EMPTY_RESULT — …', output EXACTLY the French text after "
-        "'EMPTY_RESULT — ' and nothing else. Never improvise, never suggest filters, never "
-        "mention external websites (AniList, MyAnimeList, Kitsu, etc.).\n"
-        "7. Keep filters minimal: leave min_user_score and only_finished_target unset unless "
-        "the user explicitly asks for 'mes préférés' (high score) or 'un LN/manga terminé'.\n"
-        "8. Never recommend external platforms or websites — your answer comes ONLY from the "
-        "local tools' results.\n\n"
+        "1. Resolve every recommendation/continuation/adaptation request by calling exactly ONE "
+        "tool — never write the list of titles yourself. Only answer directly for a meta question "
+        "(greeting, 'how do you work').\n"
+        "2. Call the tool ONCE with the best parameters. Keep filters minimal: leave min_user_score "
+        "and only_finished_target unset unless the user asks for 'mes préférés' or 'un LN/manga terminé'.\n"
+        "3. Answer meta questions in FRENCH. Do not add preamble, disclaimer or 'j'espère que ça "
+        "vous plaira' filler.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
 
@@ -333,7 +323,7 @@ def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> str:
         similarities = embeddings_module.query_similarities(db, query, ids, settings)
     ranked = rank_candidates(rows, similarities, has_query, settings.title_language)
     if not ranked:
-        return "EMPTY_RESULT — Aucun résultat avec ces filtres."
+        return "Aucun résultat avec ces filtres."
     return _format_search_table(ranked, has_query)
 
 
@@ -498,7 +488,7 @@ def _franchise(args: dict[str, Any], db: Any, settings: Settings) -> str:
         limit=_clamp_limit(args, 25, 50),
     )
     if not rows:
-        return "EMPTY_RESULT — Aucune suite trouvée avec ces filtres."
+        return "Aucune suite trouvée avec ces filtres."
     return _format_franchise(rows, settings.title_language)
 
 
@@ -517,7 +507,7 @@ def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
         limit=_clamp_limit(args, 15, 40),
     )
     if not rows:
-        return "EMPTY_RESULT — Aucun résultat avec ces filtres."
+        return "Aucun résultat avec ces filtres."
     return _format_cross_media(rows, settings.title_language, direction)
 
 
@@ -572,6 +562,7 @@ def run_agent(
             )
         messages.append({"role": "assistant", "content": message.content or "", "tool_calls": tool_calls})
 
+        outputs: list[str] = []
         for index, call in enumerate(message.tool_calls):
             try:
                 args = json.loads(call.function.arguments or "{}")
@@ -581,6 +572,7 @@ def run_agent(
                 on_tool_call(call.function.name, args)
             result = execute_tool(call.function.name, args, settings)
             content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            outputs.append(content)
             messages.append(
                 {
                     "role": "tool",
@@ -588,5 +580,10 @@ def run_agent(
                     "content": content,
                 }
             )
+
+        # The tool's Markdown output IS the answer. The LLM only selects the tool and its
+        # parameters; it never re-summarizes the list — that round-trip caused every synthesis
+        # bug (JSON-explaining, truncation, hallucination, filler). Show the tool output directly.
+        return "\n\n".join(outputs)
 
     return "No final answer produced — the model kept issuing tool calls."
