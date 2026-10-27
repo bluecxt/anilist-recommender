@@ -8,8 +8,8 @@ V2 additions:
   not completed is removed and its GraphScore is transferred onto the root,
   resolved **multi-hop** through the prequel/parent chain.
 * Franchise echo-chamber amortization: watching 6 seasons of a franchise is ONE
-  attachment, not six — positive contributions from the same franchise root are
-  damped by ``1/sqrt(rank)``.
+  attachment, not six — contributions (positive **and** negative) from the same
+  franchise root are damped by ``1/sqrt(rank)``.
 """
 
 from __future__ import annotations
@@ -207,14 +207,15 @@ def chain_root(
 def amortize_contributions(
     contributions: list[tuple[int, float]], root_of: dict[int, int]
 ) -> list[tuple[int, float]]:
-    """Damp positive contributions sharing a franchise root (echo-chamber guard).
+    """Damp contributions sharing a franchise root (echo-chamber guard).
 
     Watching 6 seasons of a franchise is ONE attachment, not six independent
-    votes: inside each root group the positive contributions are damped by
-    ``1/sqrt(rank)`` (rank = descending contribution, source_id as tiebreaker
-    so the result is deterministic across call sites). Negative contributions
-    stay undamped — dropping several entries of a franchise is cumulative
-    evidence of aversion, not redundancy.
+    votes — and dropping 3 entries of the same saga is ONE aversion, not three.
+    Inside each root group both **positive and negative** contributions are
+    damped by ``1/sqrt(rank)`` (rank = descending |contribution|, source_id as
+    tiebreaker so the result is deterministic across call sites). The strongest
+    signal keeps full weight; redundant same-franchise signals are down-weighted.
+    Zero contributions pass through untouched.
     """
     groups: dict[int, list[tuple[int, float]]] = defaultdict(list)
     for source_id, contribution in contributions:
@@ -225,9 +226,14 @@ def amortize_contributions(
         positives = sorted(
             (item for item in items if item[1] > 0.0), key=lambda item: (-item[1], item[0])
         )
+        negatives = sorted(
+            (item for item in items if item[1] < 0.0), key=lambda item: (item[1], item[0])
+        )
         for rank, (source_id, contribution) in enumerate(positives, start=1):
             damped.append((source_id, contribution / math.sqrt(rank)))
-        damped.extend(item for item in items if item[1] <= 0.0)
+        for rank, (source_id, contribution) in enumerate(negatives, start=1):
+            damped.append((source_id, contribution / math.sqrt(rank)))
+        damped.extend(item for item in items if item[1] == 0.0)
     return damped
 
 

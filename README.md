@@ -181,10 +181,11 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
    anime vs manga), ratio de progression unifié (épisodes / chapitres / tomes / seuil 20).
 3. **Graphe collaboratif + relationnel** — `GraphScore` par candidat, amorti par
    **franchise** (6 saisons d'une même série = UN attachement : les contributions
-   positives d'une même racine sont amorties en `1/√rang`, les négatives restent
-   cumulées). Puis **Prequel Gatekeeping multi-sauts** : une saison 2/3/4 dont le
-   préquel n'est pas terminé est retirée et son score est **transféré vers la
-   racine de la chaîne** (S4 → S3 → S2 → S1) quand elle est candidate.
+   — positives **comme négatives** — d'une même racine sont amorties en `1/√rang`,
+   le signal le plus fort gardant son poids entier). Puis **Prequel Gatekeeping
+   multi-sauts** : une saison 2/3/4 dont le préquel n'est pas terminé est retirée
+   et son score est **transféré vers la racine de la chaîne** (S4 → S3 → S2 → S1)
+   quand elle est candidate.
 4. **Recherche hybride** (`db.py` + `embeddings.py`) — filtres SQL (catégorie, longueur,
    pays) + cosinus `sqlite-vec` : `FinalScore = Norm(GraphScore)·0.45 + Sim·0.30 +
    PlanningBonus·0.10 + Qualité·0.15` (avec requête sémantique ; `0.75/0.15/0.10`
