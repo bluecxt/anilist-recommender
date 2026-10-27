@@ -718,6 +718,14 @@ def get_candidate(db: sqlite3.Connection, media_id: int) -> dict[str, Any] | Non
     return _row_to_candidate(rows[0]) if rows else None
 
 
+def completed_or_dropped_ids(db: sqlite3.Connection) -> set[int]:
+    """Media the user already finished or abandoned — never recommend these."""
+    rows = db.execute(
+        "SELECT media_id FROM user_list WHERE status IN ('COMPLETED','DROPPED')"
+    ).fetchall()
+    return {int(row["media_id"]) for row in rows}
+
+
 def recommendation_sources(db: sqlite3.Connection, target_id: int) -> list[dict[str, Any]]:
     """Raw collaborative edges pointing at a candidate, with source context."""
     rows = db.execute(

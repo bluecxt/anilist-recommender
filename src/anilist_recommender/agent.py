@@ -9,6 +9,7 @@ anything outside them. Output size is dynamic: detailed per-title analysis for
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import math
 import re
@@ -21,6 +22,7 @@ from rich.markup import escape
 
 from . import db as db_module
 from . import embeddings as embeddings_module
+from . import graphql_client as gc_module
 from . import i18n
 from .config import Settings, pick_title
 
@@ -624,6 +626,88 @@ def jev_logit_rerank(
     return survivors
 
 
+def _anchor_candidate(media: dict[str, Any], rating: int, anchor: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Shape one AniList 'similar to X' recommendation for rendering/annotation."""
+    anchor_source = {
+        "media_id": anchor["id"],
+        "type": anchor.get("type"),
+        "title_romaji": anchor.get("title_romaji"),
+        "title_english": anchor.get("title_english"),
+        "title_native": anchor.get("title_native"),
+        "status": None,
+        "score": None,
+    }
+    return {
+        "media_id": media["id"],
+        "title": pick_title(media, settings.title_language),
+        "title_romaji": media["title_romaji"],
+        "title_english": media["title_english"],
+        "title_native": media["title_native"],
+        "type": media["type"],
+        "format": media["format"],
+        "country": media["country_of_origin"],
+        "genres": media["genres"],
+        "tags": media["tags"],
+        "description": media["description"],
+        "length": _length_label(media, settings.language),
+        "episodes": media["episodes"],
+        "chapters": media["chapters"],
+        "volumes": media["volumes"],
+        "average_score": media["average_score"],
+        "semantic_similarity": None,
+        "final_score": float(rating or 0),
+        "positive_sources": [anchor_source],
+        "negative_warnings": [],
+    }
+
+
+def _anchor_recommendations(
+    settings: Settings, db: Any, anchor: dict[str, Any], limit: int
+) -> list[dict[str, Any]] | None:
+    """Fetch the anchor's own AniList community recommendations ('similar to X').
+
+    This is the gold-standard signal for 'recommend me something like <title>': the
+    collaborative edges the community drew *to that specific title*, independent of
+    the user's own graph. Returns None when the fetch fails or nothing survives, so
+    the caller falls back to the local tag/embedding search.
+    """
+    async def _fetch() -> list[dict[str, Any]]:
+        client = gc_module.AniListClient(min_interval=settings.request_interval)
+        try:
+            return await client.fetch_recommendations(anchor["id"], per_page=20)
+        finally:
+            await client.close()
+
+    try:
+        nodes = asyncio.run(_fetch())
+    except Exception:
+        return None
+    if not nodes:
+        return None
+
+    exclude = db_module.completed_or_dropped_ids(db) | {anchor["id"]}
+    candidates: list[dict[str, Any]] = []
+    for node in nodes:
+        rating = node.get("rating")
+        raw = node.get("mediaRecommendation")
+        if rating is None or not raw:
+            continue
+        media = gc_module.normalize_media(raw)
+        if media.get("id") in exclude:
+            continue
+        candidates.append(_anchor_candidate(media, int(rating), anchor, settings))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: -c["final_score"])
+    # Normalize the raw community ratings (0-100+) to a [0,1] score, top = 1.0.
+    top = max((c["final_score"] for c in candidates), default=0.0) or 1.0
+    for c in candidates:
+        c["final_score"] = round(c["final_score"] / top, 4)
+    print(f"→ fetched {len(candidates)} similar titles from AniList", file=sys.stderr)
+    return candidates[:limit]
+
+
 def _search_new(
     args: dict[str, Any],
     db: Any,
@@ -705,9 +789,13 @@ def _search_new(
     has_query = bool(semantic)
     similarities: dict[int, float] = {}
     if anchor is not None:
-        # Drop the anchor itself, then rank survivors by document proximity to it.
         anchor_title = anchor.get("title_english") or anchor.get("title_romaji") or ""
         print(f"→ resolved anchor: {anchor_title} (#{anchor['id']})", file=sys.stderr)
+        # Prefer the anchor's own community recommendations ("similar to X").
+        fetched = _anchor_recommendations(settings, db, anchor, target_limit)
+        if fetched is not None:
+            return fetched
+        # Fall back: drop the anchor itself, rank survivors by document proximity.
         rows = [row for row in rows if row["media_id"] != anchor["id"]]
         anchor_text = embeddings_module.build_embedding_text(anchor)
         similarities = embeddings_module.neighbor_similarities(
