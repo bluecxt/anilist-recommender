@@ -1,5 +1,8 @@
 # anilist-recommender
 
+> 🤖 **Projet entièrement codé par une IA** (agent de programmation assisté), relu et
+> testé en boucle, mais **sans audit humain** à ce jour.
+>
 > 🔒 **100 % local & hors-ligne.** Ton profil AniList, tes notes, l'historique, les
 > embeddings et le LLM tournent **entièrement sur ta machine**. Aucun cloud, aucune
 > télémétrie, aucune donnée envoyée à un serveur tiers (hormis le `sync`, qui ne fait
