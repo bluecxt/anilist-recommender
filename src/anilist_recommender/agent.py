@@ -161,9 +161,8 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "Rule of thumb: if \"manga\" or \"light novel\" designates WHERE THE STORY CONTINUES "
         "(not a side bonus), use find_cross_media_adaptations with direction=ANIME_TO_PRINT.\n\n"
         "STRICT RULES:\n"
-        "1. LANGUAGE (critical): answer in the EXACT language the user wrote in (French question "
-        "→ French answer). NEVER answer in Chinese or English, even though the titles are "
-        "Japanese and the JSON fields are English.\n"
+        "1. LANGUAGE (critical): always answer in FRENCH (the user's language), never in "
+        "English or Chinese — even though the titles are Japanese and the data is English.\n"
         "2. Never invent a title — recommend ONLY what a tool returns.\n"
         "3. Call each tool ONCE with your best parameters, then write the final answer. Do not "
         "re-call the same tool just to tweak filters.\n"
@@ -171,9 +170,9 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "   - <=5 results: analyze each one in depth — cite graph_score, positive_sources, "
         "negative_warnings, exact format and length.\n"
         "   - >5 results: full Markdown table or exhaustive list, never truncate.\n"
-        "5. Presentation: for franchise/cross-media results, print each item's `summary` "
-        "field VERBATIM (it already contains the correct numbers) — do not rephrase or "
-        "recompute lengths/scores.\n"
+        "5. Presentation: find_unseen_franchise_entries and find_cross_media_adaptations "
+        "return a ready-made Markdown list — RELAY it as-is. Never describe the JSON "
+        "structure or invent numbers.\n"
         "6. Be direct, analytical, zero filler.\n"
         "7. If a tool returns nothing, say so plainly and suggest looser filters.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
@@ -290,33 +289,21 @@ def _relation_summary(
     return summary + ")"
 
 
-def _relation_row(row: dict[str, Any], *, include_country: bool) -> dict[str, Any]:
-    item = {
-        "source_title": row.get("source_title_romaji") or row.get("source_title_english"),
-        "source_format": row.get("source_format"),
-        "my_score": row.get("parent_score"),
-        "my_affinity": round(row.get("parent_weight") or 0.0, 2),
-        "relation_type": row.get("relation_type"),
-        "target_title": row.get("target_title"),
-        "target_format": row.get("target_format"),
-        "target_status": row.get("target_status"),
-        "target_episodes": row.get("target_episodes"),
-        "target_chapters": row.get("target_chapters"),
-        "target_volumes": row.get("target_volumes"),
-        "target_score": row.get("target_score"),
-    }
-    if include_country:
-        item["target_type"] = row.get("target_type")
-        item["target_country"] = row.get("target_country")
-    item["summary"] = _relation_summary(
-        item["source_title"], item["target_title"], item["relation_type"],
-        item["target_format"], item["target_status"], item["target_episodes"],
-        item["target_chapters"], item["target_volumes"], item["target_score"],
+def _relation_summary_from_row(row: dict[str, Any]) -> str:
+    return _relation_summary(
+        row.get("source_title_romaji") or row.get("source_title_english"),
+        row.get("target_title"),
+        row.get("relation_type"),
+        row.get("target_format"),
+        row.get("target_status"),
+        row.get("target_episodes"),
+        row.get("target_chapters"),
+        row.get("target_volumes"),
+        row.get("target_score"),
     )
-    return item
 
 
-def _franchise(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
+def _franchise(args: dict[str, Any], db: Any) -> str:
     rows = db_module.find_unseen_franchise_entries(
         db,
         source_type=args.get("source_type") or "ANIME",
@@ -326,10 +313,13 @@ def _franchise(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
         include_unreleased=bool(args.get("include_unreleased")),
         limit=_clamp_limit(args, 25, 50),
     )
-    return [_relation_row(r, include_country=True) for r in rows]
+    if not rows:
+        return "No unseen franchise entries found. Suggest loosening the filters."
+    lines = [_relation_summary_from_row(r) for r in rows]
+    return f"{len(lines)} unseen franchise entries (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
 
 
-def _adaptations(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
+def _adaptations(args: dict[str, Any], db: Any) -> str:
     rows = db_module.find_cross_media_adaptations(
         db,
         direction=args.get("direction") or "ANIME_TO_PRINT",
@@ -338,10 +328,13 @@ def _adaptations(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
         only_finished_target=bool(args.get("only_finished_target")),
         limit=_clamp_limit(args, 15, 40),
     )
-    return [_relation_row(r, include_country=False) for r in rows]
+    if not rows:
+        return "No cross-media adaptations found. Suggest loosening the filters."
+    lines = [_relation_summary_from_row(r) for r in rows]
+    return f"{len(lines)} cross-media links (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
 
 
-def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> list[dict[str, Any]]:
+def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | list[dict[str, Any]]:
     connection = db_module.connect(settings.db_path)
     try:
         if name == "search_new_recommendations":
@@ -400,11 +393,12 @@ def run_agent(
             if on_tool_call is not None:
                 on_tool_call(call.function.name, args)
             result = execute_tool(call.function.name, args, settings)
+            content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": getattr(call, "id", None) or f"call_{index}",
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": content,
                 }
             )
 
