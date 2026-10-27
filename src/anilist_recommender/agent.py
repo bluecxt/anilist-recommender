@@ -359,7 +359,7 @@ def _render_search(
         meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
         if has_query and item.get("semantic_similarity") is not None:
             meta += f" · sim {item['semantic_similarity']:.2f}"
-        lines.append(f"{index}. **{item['title']}** — {meta} · affinité {item['graph_score']:.2f}")
+        lines.append(f"{index}. {item['title']} — {meta} · affinité {item['graph_score']:.2f}")
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")
@@ -486,10 +486,10 @@ def _format_franchise(rows: list[dict[str, Any]], language: str) -> str:
         if len(targets) == 1:
             target = targets[0]
             rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
-            lines.append(f"- **{_target_title(target, language)}** — {rel} · {_target_meta(target)} · {stars}")
+            lines.append(f"- {_target_title(target, language)} — {rel} · {_target_meta(target)} · {stars}")
             lines.append(f"  ↳ depuis : {src_title}")
         else:
-            lines.append(f"**{src_title}** — {stars} affinité")
+            lines.append(f"{src_title} — {stars} affinité")
             for target in targets:
                 rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
                 lines.append(f"  • {_target_title(target, language)} — {rel} · {_target_meta(target)}")
@@ -511,10 +511,10 @@ def _format_cross_media(rows: list[dict[str, Any]], language: str, direction: st
         stars = _stars(source.get("parent_weight"))
         if len(targets) == 1:
             target = targets[0]
-            lines.append(f"- **{_target_title(target, language)}** — {_target_meta(target)} · {stars}")
+            lines.append(f"- {_target_title(target, language)} — {_target_meta(target)} · {stars}")
             lines.append(f"  ↳ {link} : {src_title}")
         else:
-            lines.append(f"**{src_title}** — {stars} affinité · {len(targets)} titres")
+            lines.append(f"{src_title} — {stars} affinité · {len(targets)} titres")
             for target in targets:
                 lines.append(f"  • {_target_title(target, language)} — {_target_meta(target)}")
     return "\n".join(lines)
@@ -568,6 +568,35 @@ def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | l
         connection.close()
 
 
+def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
+    """Recover a tool call emitted as a JSON string instead of native `tool_calls`.
+
+    Some Ollama models dump the call into `message.content` as e.g.
+    `{"name": "...", "parameters": {...}}` (or `"arguments"`). Parse it so the
+    request still executes instead of printing the raw JSON.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None, {}
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None, {}
+    if isinstance(data, dict) and data.get("name"):
+        params = data.get("parameters") or data.get("arguments") or {}
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except ValueError:
+                params = {}
+        if isinstance(params, dict):
+            return str(data["name"]), params
+    return None, {}
+
+
 def run_agent(
     query: str,
     settings: Settings,
@@ -590,31 +619,51 @@ def run_agent(
             extra_body={"options": {"num_ctx": 8192, "temperature": 0.2}},
         )
         message = response.choices[0].message
+        raw_content = message.content or ""
 
-        if not message.tool_calls:
-            return (message.content or "").strip()
+        # Resolve the tool call(s): native `message.tool_calls`, else a JSON-string fallback.
+        calls: list[tuple[str, str, dict[str, Any]]] = []
+        native = bool(message.tool_calls)
+        if native:
+            for index, call in enumerate(message.tool_calls):
+                call_id = getattr(call, "id", None) or f"call_{index}"
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                except ValueError:
+                    args = {}
+                calls.append((call_id, call.function.name, args))
+        else:
+            name, args = _parse_text_tool_call(raw_content)
+            if name:
+                calls.append(("call_0", name, args))
 
-        tool_calls = []
-        for index, call in enumerate(message.tool_calls):
-            tool_calls.append(
+        if not calls:
+            return raw_content.strip()
+
+        if native:
+            messages.append(
                 {
-                    "id": getattr(call, "id", None) or f"call_{index}",
-                    "type": "function",
-                    "function": {"name": call.function.name, "arguments": call.function.arguments},
+                    "role": "assistant",
+                    "content": raw_content,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(args)},
+                        }
+                        for call_id, name, args in calls
+                    ],
                 }
             )
-        messages.append({"role": "assistant", "content": message.content or "", "tool_calls": tool_calls})
+        else:
+            messages.append({"role": "assistant", "content": raw_content})
 
         outputs: list[str] = []
-        for index, call in enumerate(message.tool_calls):
-            try:
-                args = json.loads(call.function.arguments or "{}")
-            except ValueError:
-                args = {}
+        for call_id, name, args in calls:
             if on_tool_call is not None:
-                on_tool_call(call.function.name, args)
-            result = execute_tool(call.function.name, args, settings)
-            if call.function.name == "search_new_recommendations" and isinstance(result, list):
+                on_tool_call(name, args)
+            result = execute_tool(name, args, settings)
+            if name == "search_new_recommendations" and isinstance(result, list):
                 if not result:
                     content = "Aucun résultat avec ces filtres."
                 else:
@@ -624,15 +673,9 @@ def run_agent(
             else:
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             outputs.append(content)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": getattr(call, "id", None) or f"call_{index}",
-                    "content": content,
-                }
-            )
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
-        # The tool's Markdown output IS the answer. The LLM only selects the tool and its
+        # The tool's output IS the answer. The LLM only selects the tool and its
         # parameters; it never re-summarizes the list — that round-trip caused every synthesis
         # bug (JSON-explaining, truncation, hallucination, filler). Show the tool output directly.
         return "\n\n".join(outputs)

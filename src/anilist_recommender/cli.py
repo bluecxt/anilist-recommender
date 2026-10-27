@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 
 import typer
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.progress import (
     BarColumn,
     Progress,
@@ -432,7 +431,7 @@ def ask(
     _require_synced(settings)
     console.print("[cyan]Thinking (local LLM)…[/cyan]")
     answer = agent.run_agent(query, settings, on_tool_call=_log_tool if verbose else None)
-    console.print(Markdown(answer))
+    console.print(answer)
 
 
 @app.command()
@@ -456,7 +455,7 @@ def chat(
         if not query:
             continue
         answer = agent.run_agent(query, settings, history=history, on_tool_call=_log_tool if verbose else None)
-        console.print(Markdown(answer))
+        console.print(answer)
         history.append({"role": "user", "content": query})
         history.append({"role": "assistant", "content": answer})
 
