@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime, timezone
 
 import typer
@@ -142,7 +141,7 @@ def sync(
 ) -> None:
     """Download AniList data, score it, build GraphScore + CPU embeddings."""
     settings = get_settings()
-    username = username or os.environ.get("ANILIST_USERNAME")
+    username = username or settings.username
     if not username:
         console.print("[red]Provide a username: `anilist-rec sync <username>`[/red]")
         raise typer.Exit(1)

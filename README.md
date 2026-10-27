@@ -45,8 +45,8 @@ wheels *manylinux* de `torch` et `sqlite-vec` se chargent sur NixOS. Les
 ```bash
 uv run anilist-rec --help
 
-# 1. Synchroniser un profil (notes → poids d'affinité → GraphScore → embeddings CPU)
-uv run anilist-rec sync <username>
+# 1. Synchroniser un profil (username lu depuis config.toml si présent)
+uv run anilist-rec sync
 
 # 2. Afficher le résumé analytique du profil + les reco latentes au plus fort GraphScore
 uv run anilist-rec profile
@@ -94,11 +94,33 @@ environment.systemPackages = [
 
 ---
 
-## Configuration (variables d'environnement)
+## Configuration
+
+Le plus simple : copie `config.example.toml` en `config.toml` et fixe ton nom
+d'utilisateur — plus besoin de le passer à chaque commande.
+
+```bash
+cp config.example.toml config.toml
+```
+
+```toml
+# config.toml
+username = "ton-pseudo"            # fixe le profil AniList
+# data_dir = "data"
+# ollama_model = "qwen2.5:7b"
+# embedding_model = "intfloat/multilingual-e5-small"
+# max_graph_sources = 60
+```
+
+Fichier cherché dans l'ordre (premier trouvé) : `$ANILIST_CONFIG` → `./config.toml`
+→ `~/.config/anilist-recommender/config.toml`. Priorité : argument CLI > variable
+d'environnement > `config.toml` > défaut.
+
+Les variables d'environnement restent disponibles pour surcharger ponctuellement :
 
 | Variable | Défaut | Rôle |
 |---|---|---|
-| `ANILIST_USERNAME` | — | Nom d'utilisateur AniList (sinon passé à `sync`) |
+| `ANILIST_USERNAME` | — | Nom d'utilisateur AniList |
 | `ANILIST_DATA_DIR` | `data/` | Dossier contenant `anilist_local.db` + `taste_profile.json` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Endpoint OpenAI-compatible d'Ollama |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Modèle LLM (doit supporter le tool calling) |

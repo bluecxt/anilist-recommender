@@ -1,0 +1,25 @@
+# anilist-recommender configuration.
+#
+# Copy this file to `config.toml` (in the current directory, or via
+# $ANILIST_CONFIG) and edit the values you need. Precedence:
+#
+#     CLI argument > environment variable > config.toml > built-in default
+#
+# `config.toml` is gitignored — only this example is committed.
+
+# Your AniList username. Fix it here so you can just run `anilist-rec sync`.
+username = "YOUR_ANILIST_USERNAME"
+
+# Where the local database + taste profile live.
+# data_dir = "data"
+
+# Local LLM (Ollama). 100% of the VRAM is reserved for this model.
+# ollama_base_url = "http://localhost:11434/v1"
+# ollama_model = "qwen2.5:7b"
+
+# Embeddings always run on CPU (device="cpu").
+# embedding_model = "intfloat/multilingual-e5-small"   # or "BAAI/bge-m3"
+
+# Collaborative-graph budget & rate-limit tuning.
+# max_graph_sources = 60
+# request_interval = 0.85
