@@ -256,6 +256,7 @@ def _require_synced(settings: Settings) -> None:
     if (
         "title_native" not in columns
         or "is_adult" not in columns
+        or "synonyms" not in columns
         or version < db_module.SCHEMA_VERSION
     ):
         console.print("[red]Database schema is outdated — run `anilist-rec sync` again.[/red]")

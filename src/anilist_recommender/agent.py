@@ -631,11 +631,20 @@ def _search_new(
     query: str = "",
     client: Any | None = None,
 ) -> list[dict[str, Any]]:
+    # Nickname/title resolution ("genre NGNL", "like tensura"): resolve BEFORE the
+    # SQL so the anchor's own medium can drive the category (the LLM frequently
+    # picks the wrong one — e.g. ANY_PRINT for an explicit "anime" request).
+    anchor = db_module.resolve_media_by_alias(db, query) if query else None
+
     # Adult content is often OVA/short format and lives in BOTH anime and manga, so
     # an explicit adult request widens the format/category filters and pins the pool
     # to is_adult titles (AniList has no 'hentai' genre the model can pick, and the
     # embedding of 'hentai' alone would otherwise latch onto dark manga like Berserk).
     adult_request = settings.allow_adult and _wants_adult(query)
+    if adult_request:
+        # Adult requests are pinned to is_adult titles; a nickname anchor would
+        # fight that (and "adult" could spuriously match some synonym).
+        anchor = None
     if adult_request:
         category = "ANY"
         include_movies = True
@@ -644,12 +653,25 @@ def _search_new(
         adult_only = True
     else:
         category = _to_str(args.get("category"), "ANIME")
-        include_movies = _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
-        min_length = _to_int(args.get("min_length"))
-        max_length = _to_int(args.get("max_length"))
-        max_volumes = _to_int(args.get("max_volumes"))
-        required = _to_str_list(args.get("required_genres_or_tags"))
-        excluded = _to_str_list(args.get("excluded_genres_or_tags"))
+        if anchor is not None:
+            # "genre X" → same medium as X, and the LLM's genre/length filters are
+            # derived from a misread nickname (it can hallucinate a giant exclusion
+            # list), so drop them. Constrain the pool to titles sharing X's genres
+            # or top tags, then rank by embedding proximity to X.
+            category = "ANIME" if anchor["type"] == "ANIME" else "ANY_PRINT"
+            include_movies = True
+            min_length = max_length = max_volumes = None
+            # Tags are the discriminating signal (genres like "Action"/"Fantasy" are
+            # too broad and would let unrelated titles through the OR filter).
+            required = (anchor.get("tags") or [])[:6]
+            excluded = None
+        else:
+            include_movies = _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
+            min_length = _to_int(args.get("min_length"))
+            max_length = _to_int(args.get("max_length"))
+            max_volumes = _to_int(args.get("max_volumes"))
+            required = _to_str_list(args.get("required_genres_or_tags"))
+            excluded = _to_str_list(args.get("excluded_genres_or_tags"))
         adult_only = False
 
     filter_question = _resolve_filter_question(args, query)
@@ -679,9 +701,20 @@ def _search_new(
         # The model has no adult genre/tag to select, so embed the user's own
         # request as the vector query to actually surface adult titles.
         semantic = query
+
     has_query = bool(semantic)
     similarities: dict[int, float] = {}
-    if has_query:
+    if anchor is not None:
+        # Drop the anchor itself, then rank survivors by document proximity to it.
+        anchor_title = anchor.get("title_english") or anchor.get("title_romaji") or ""
+        print(f"→ resolved anchor: {anchor_title} (#{anchor['id']})", file=sys.stderr)
+        rows = [row for row in rows if row["media_id"] != anchor["id"]]
+        anchor_text = embeddings_module.build_embedding_text(anchor)
+        similarities = embeddings_module.neighbor_similarities(
+            db, anchor_text, [row["media_id"] for row in rows], settings
+        )
+        has_query = True
+    elif has_query:
         ids = [row["media_id"] for row in rows]
         similarities = embeddings_module.query_similarities(db, semantic, ids, settings)
 

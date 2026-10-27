@@ -33,6 +33,7 @@ MEDIA_FIELDS = """
   id
   type
   title { romaji english native }
+  synonyms
   format
   status
   episodes
@@ -71,6 +72,7 @@ RECOMMENDATION_MEDIA_FIELDS = """
   id
   type
   title { romaji english native }
+  synonyms
   format
   status
   episodes
@@ -433,6 +435,7 @@ def normalize_media(raw: dict[str, Any]) -> dict[str, Any]:
         "title_romaji": title.get("romaji"),
         "title_english": title.get("english"),
         "title_native": title.get("native"),
+        "synonyms": list(raw.get("synonyms") or []),
         "format": raw.get("format"),
         "status": raw.get("status"),
         "episodes": raw.get("episodes"),

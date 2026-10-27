@@ -18,7 +18,7 @@ from .scoring import Candidate, Work
 
 # Bump when the stored format changes in a way a stale DB can't satisfy (the
 # CLI's `_require_synced` guard reads this from the `meta` table).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 CREATE_MEDIA = """
 CREATE TABLE media (
@@ -27,6 +27,7 @@ CREATE TABLE media (
   title_romaji TEXT,
   title_english TEXT,
   title_native TEXT,
+  synonyms TEXT,
   format TEXT,
   status TEXT,
   episodes INTEGER,
@@ -160,9 +161,9 @@ def reset_schema(db: sqlite3.Connection, embedding_dim: int) -> None:
 
 
 _MEDIA_COLUMNS = (
-    "id, type, title_romaji, title_english, title_native, format, status, episodes, duration, "
-    "chapters, volumes, country_of_origin, average_score, popularity, is_adult, genres, tags, "
-    "studios, description, prequel_id, parent_id, is_root, season_number, franchise_episodes"
+    "id, type, title_romaji, title_english, title_native, synonyms, format, status, episodes, "
+    "duration, chapters, volumes, country_of_origin, average_score, popularity, is_adult, genres, "
+    "tags, studios, description, prequel_id, parent_id, is_root, season_number, franchise_episodes"
 )
 
 
@@ -173,6 +174,7 @@ def _media_values(media: dict[str, Any]) -> tuple[Any, ...]:
         media.get("title_romaji"),
         media.get("title_english"),
         media.get("title_native"),
+        json.dumps(media.get("synonyms") or []),
         media.get("format"),
         media.get("status"),
         media.get("episodes"),
@@ -214,7 +216,7 @@ def persist(
     for media in media_rows.values():
         db.execute(
             f"INSERT OR REPLACE INTO media ({_MEDIA_COLUMNS}) "
-            f"VALUES ({','.join('?' * 24)})",
+            f"VALUES ({','.join('?' * 25)})",
             _media_values(media),
         )
 
@@ -664,6 +666,51 @@ def find_media_by_title(
         (like, like, like, limit),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def resolve_media_by_alias(db: sqlite3.Connection, query: str) -> dict[str, Any] | None:
+    """Resolve a nickname/title mentioned in a natural-language query to a local media.
+
+    Matches case-insensitively against every title variant AND AniList's ``synonyms``
+    (so "ngnl" → No Game No Life, "tensura" → Slime, "opm" → One Punch Man). The
+    longest matched alias wins (most specific). Returns a media dict whose ``genres``
+    and ``tags`` are parsed into lists (ready for ``build_embedding_text``), or None.
+    """
+    text = (query or "").lower().strip()
+    if not text:
+        return None
+    rows = db.execute(
+        "SELECT id, type, title_romaji, title_english, title_native, synonyms, "
+        "genres, tags, description FROM media"
+    ).fetchall()
+
+    def _list(value: Any) -> list[str]:
+        try:
+            parsed = json.loads(value or "[]")
+            return parsed if isinstance(parsed, list) else []
+        except (TypeError, ValueError):
+            return []
+
+    best: tuple[int, dict[str, Any]] | None = None
+    for row in rows:
+        media = dict(row)
+        names: list[str] = [
+            media.get("title_romaji"),
+            media.get("title_english"),
+            media.get("title_native"),
+        ]
+        names.extend(_list(media.get("synonyms")))
+        for name in names:
+            if not name:
+                continue
+            lowered = str(name).lower().strip()
+            if len(lowered) < 3 or lowered not in text:
+                continue
+            if best is None or len(lowered) > best[0]:
+                media["genres"] = _list(media.get("genres"))
+                media["tags"] = _list(media.get("tags"))
+                best = (len(lowered), media)
+    return best[1] if best else None
 
 
 def get_candidate(db: sqlite3.Connection, media_id: int) -> dict[str, Any] | None:

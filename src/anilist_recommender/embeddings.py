@@ -94,6 +94,35 @@ def content_hash(settings: Settings, text: str) -> str:
     return hashlib.sha256((settings.embedding_doc_prefix + text).encode("utf-8")).hexdigest()
 
 
+def neighbor_similarities(
+    db: sqlite3.Connection,
+    anchor_text: str,
+    candidate_ids: list[int],
+    settings: Settings,
+) -> dict[int, float]:
+    """Document-to-document cosine similarity: rank candidates by proximity to an anchor media.
+
+    Unlike :func:`query_similarities` (which embeds a *query* with the ``query:``
+    prefix), the anchor is embedded as a *passage* (``passage:`` prefix) — the same
+    representation the candidates were stored with — so "recommend like X" compares
+    like with like.
+    """
+    if not candidate_ids:
+        return {}
+    anchor_vector = embed_texts([anchor_text], settings)[0]
+    total = db.execute("SELECT COUNT(*) AS n FROM vec_media").fetchone()["n"]
+    k = max(1, int(total))
+    rows = db.execute(
+        "SELECT media_id, distance FROM vec_media WHERE embedding MATCH ? AND k = ?",
+        (json.dumps(anchor_vector), k),
+    ).fetchall()
+    similarities: dict[int, float] = {}
+    for row in rows:
+        similarity = 1.0 - float(row["distance"])
+        similarities[row["media_id"]] = max(0.0, min(1.0, similarity))
+    return similarities
+
+
 def store_vectors(db: sqlite3.Connection, vectors: list[tuple[int, list[float]]]) -> None:
     """Insert (media_id, embedding) rows into the vec_media virtual table.
 
