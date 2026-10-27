@@ -62,11 +62,12 @@ uv run anilist-rec chat
 
 ## Binaire (`anilist-rec`) & intégration NixOS
 
-Le flake expose aussi un **paquet** (pas seulement un devShell) :
+Le flake expose aussi un **paquet** construit **hors-ligne depuis nixpkgs**
+(Python 3.13), servi par le binary cache officiel — aucun réseau au build :
 
 ```bash
-# Construit un binaire autonome → result/bin/anilist-rec
-nix build .#default --option sandbox false
+# Construit un binaire autonome → result/bin/anilist-rec (offline, cache.nixos.org)
+nix build .#default
 
 # Lance directement la commande (équivalent de `anilist-rec ...`)
 nix run .#default -- sync <username>
@@ -83,15 +84,13 @@ environment.systemPackages = [
 ];
 ```
 
-> ⚠️ Le paquet installe `torch` / `sentence-transformers` / `sqlite-vec` depuis
-> PyPI **au moment du build** : il a besoin du réseau pendant le build. Sur NixOS,
-> soit tu construis une fois avec `--option sandbox false` (et pousses le résultat
-> vers un binary cache), soit tu actives `nix.settings.sandbox = "relaxed"`.
-> Pour un build 100 % hors-ligne et reproductible, la piste est
-> [`uv2nix`](https://github.com/astral-sh/uv2nix).
+> ℹ️ Le paquet repose sur `python313Packages` — `sqlite-vec` et
+> `sentence-transformers` (avec son `torch` **CPU**) y sont déjà empaquetés, d'où
+> le passage de Python 3.12 à **3.13**. Au premier `sync`, le modèle d'embeddings
+> (~120 Mo) est téléchargé depuis Hugging Face dans `~/.cache/huggingface`
+> (réseau au *runtime*, pas au build).
 
-**Alternative rapide** (sans toucher à ta config) : `uv tool install .` installe
-un binaire `anilist-rec` persistant dans `~/.local/bin`.
+**Alternative dev** : `nix develop && uv sync && uv run anilist-rec ...`
 
 ---
 
