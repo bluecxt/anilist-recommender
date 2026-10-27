@@ -31,10 +31,11 @@ def _anilist_url(media_type: str | None, media_id: Any) -> str:
 
 def anilist_link(title: str, media_type: str | None, media_id: Any) -> str:
     """Wrap a title in an OSC-8 hyperlink (clickable — Ctrl+Click — in modern
-    terminals: Konsole, GNOME Terminal, kitty, iTerm2, Windows Terminal, …)."""
+    terminals: Konsole, GNOME Terminal, kitty, iTerm2, Windows Terminal, …),
+    colored bold cyan so names stand out from the surrounding text."""
     if not media_id or not title:
         return title
-    return f"[link={_anilist_url(media_type, media_id)}]{escape(title)}[/link]"
+    return f"[link={_anilist_url(media_type, media_id)}][bold cyan]{escape(title)}[/bold cyan][/link]"
 
 
 def _heat_color(value: float) -> str:
