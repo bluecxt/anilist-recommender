@@ -285,6 +285,20 @@ def _format_source(source: dict[str, Any], language: str, colorize: bool = False
     return f"« {title} »{suffix}"
 
 
+def _format_source_compact(source: dict[str, Any], language: str, colorize: bool = True) -> str:
+    """Compact form of `_format_source` for a list: ``« Title » 85/100``."""
+    if isinstance(source, str):
+        return source
+    title = pick_title(source, language)
+    score = source.get("score")
+    if score and score > 0:
+        text = f"{int(score)}/100"
+        if colorize:
+            text = _heat(float(score), 0.0, 100.0, text)
+        return f"« {title} » {text}"
+    return f"« {title} »"
+
+
 def rank_candidates(
     rows: list[dict[str, Any]],
     similarities: dict[int, float],
@@ -577,9 +591,9 @@ def _render_search(
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")
-        elif item.get("positive_sources"):
-            sources = " · ".join(_format_source(s, language, colorize=True) for s in item["positive_sources"][:2])
-            lines.append(f"   → proche de : {sources}")
+        if item.get("positive_sources"):
+            proches = " · ".join(_format_source_compact(s, language) for s in item["positive_sources"][:6])
+            lines.append(f"   proche de : {proches}")
         if item.get("negative_warnings"):
             warnings = " · ".join(_format_source(s, language, colorize=True) for s in item["negative_warnings"][:2])
             lines.append(f"   [red]⚠ recommandé aussi par {warnings}[/red]")
