@@ -103,14 +103,24 @@ TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "find_cross_media_adaptations",
             "description": (
-                "Bridge anime <-> print. ANIME_TO_PRINT: an anime whose SOURCE material is a "
-                "manga/LN — read the source to continue the story past the anime. "
-                "PRINT_TO_ANIME: a manga/LN the user read that has an anime adaptation."
+                "Bridge between an anime and its manga/light-novel source. Use ONLY when the "
+                "user has a work in one medium and wants its counterpart in the other. "
+                "direction=ANIME_TO_PRINT means: 'I WATCHED an anime, find the manga/LN that is "
+                "its SOURCE so I can read the continuation'. direction=PRINT_TO_ANIME means: "
+                "'I READ a manga/LN, find its anime adaptation'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "direction": {"type": "string", "enum": ["ANIME_TO_PRINT", "PRINT_TO_ANIME"]},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["ANIME_TO_PRINT", "PRINT_TO_ANIME"],
+                        "description": (
+                            "ANIME_TO_PRINT: user WATCHED an anime, wants its manga/LN source "
+                            "(to read the continuation). PRINT_TO_ANIME: user READ a manga/LN, "
+                            "wants its anime adaptation."
+                        ),
+                    },
                     "target_print_format": {"type": "string", "enum": ["ANY", "MANGA", "NOVEL"]},
                     "min_user_score": {"type": "integer", "description": "Only works the user scored >= this (default 75)."},
                     "only_finished_target": {"type": "boolean", "description": "Only fully published targets."},
@@ -140,15 +150,16 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "running fully offline. You reason only from the local database and the taste profile "
         "below, across every medium: TV, movies, OVAs, manga, light novels, Korean manhwa and "
         "Chinese manhua.\n\n"
-        "TOOLS (pick the right one):\n"
-        "- search_new_recommendations: discover NEW titles to watch/read.\n"
-        "- find_unseen_franchise_entries: continuations WITHIN THE SAME MEDIUM (anime "
-        "S2/OVA/movie, manga sequel) the user has not finished.\n"
-        "- find_cross_media_adaptations: continuations that CHANGE MEDIUM — \"the rest is only "
-        "in manga/LN\" → ANIME_TO_PRINT; \"this manga/LN has an anime\" → PRINT_TO_ANIME.\n"
-        "ROUTING: \"suite/fin disponible en manga ou light novel\" → "
-        "find_cross_media_adaptations(direction=ANIME_TO_PRINT). \"suite/OAV/film de mes animes\" → "
-        "find_unseen_franchise_entries(source_type=ANIME).\n\n"
+        "TOOL SELECTION — decide by what the user HAS and what they WANT:\n"
+        "- WANTS new titles (\"conseille-moi\", \"je veux découvrir\") → search_new_recommendations.\n"
+        "- HAS an anime, WANTS its sequel/OVA/movie/spin-off IN ANIME → "
+        "find_unseen_franchise_entries(source_type=ANIME).\n"
+        "- HAS an anime, WANTS the manga/LN that CONTINUES the story (\"la suite est en manga / "
+        "light novel / roman\") → find_cross_media_adaptations(direction=ANIME_TO_PRINT).\n"
+        "- HAS a manga/LN, WANTS its anime adaptation → "
+        "find_cross_media_adaptations(direction=PRINT_TO_ANIME).\n"
+        "Rule of thumb: if \"manga\" or \"light novel\" designates WHERE THE STORY CONTINUES "
+        "(not a side bonus), use find_cross_media_adaptations with direction=ANIME_TO_PRINT.\n\n"
         "STRICT RULES:\n"
         "1. Never invent a title — recommend ONLY what a tool returns.\n"
         "2. OUTPUT SIZE (critical):\n"
