@@ -134,7 +134,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | `OLLAMA_MODEL` | `llama3.1:8b` | Modèle LLM (doit supporter le tool calling) |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
-| `ANILIST_REQUEST_INTERVAL` | `0.85` | Intervalle minimal (anti-burst) entre deux requêtes (s) ; le quota est piloté par les headers `X-RateLimit-*` |
+| `ANILIST_REQUEST_INTERVAL` | `0.85` | Cadence **initiale** entre deux requêtes (s). Elle s'**auto-adapte** : chaque 429 la ralentit (×1,5, plafond 6 s) pour converger vers le vrai plafond d'AniList au lieu de le percuter ; le quota est aussi piloté par les headers `X-RateLimit-*` |
 | `ANILIST_TITLE_LANGUAGE` | `english` | Langue d'affichage des titres : `english` \| `romaji` \| `native` (japonais), avec repli automatique |
 
 ---

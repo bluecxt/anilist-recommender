@@ -169,6 +169,11 @@ class AniListClient:
             },
         )
         self._min_interval = max(0.0, min_interval)
+        # Self-tuning pacing: starts at `min_interval` and grows on every 429 so we
+        # converge on AniList's *real* per-minute cap instead of repeatedly bursting
+        # into it and relying on backoff.
+        self._effective_interval = self._min_interval
+        self._max_interval = 6.0
         self._last_request = 0.0
         self._lock = asyncio.Lock()
         # Adaptive rate-limit state, refreshed from X-RateLimit-* headers.
@@ -182,7 +187,7 @@ class AniListClient:
     async def _throttle(self) -> None:
         async with self._lock:
             now = time.monotonic()
-            wait = self._min_interval - (now - self._last_request)
+            wait = self._effective_interval - (now - self._last_request)
             if wait > 0:
                 await asyncio.sleep(wait)
             self._last_request = time.monotonic()
@@ -221,18 +226,24 @@ class AniListClient:
             pass
 
     async def _wait_for_quota(self) -> None:
-        """Sleep until the next rate-limit window before the quota runs out."""
-        if self._rate_remaining is not None and self._rate_remaining <= 2:
-            if self._rate_reset is not None:
-                wait = self._rate_reset - time.time() + 0.5
-                if wait > 0:
-                    logger.info(
-                        "rate limit near (%s left) — waiting %.1fs for reset",
-                        self._rate_remaining, wait,
-                    )
-                    await asyncio.sleep(wait)
-            self._rate_remaining = None
-            self._rate_reset = None
+        """Sleep until the next rate-limit window before the quota runs out.
+
+        Fires well before exhaustion (10% of the budget left, min 3) so we avoid
+        the server-side 429 entirely when the X-RateLimit-* headers are accurate.
+        """
+        if self._rate_remaining is not None and self._rate_limit:
+            threshold = max(3, int(self._rate_limit * 0.1))
+            if self._rate_remaining <= threshold:
+                if self._rate_reset is not None:
+                    wait = self._rate_reset - time.time() + 0.5
+                    if wait > 0:
+                        logger.info(
+                            "rate limit near (%s/%s left) — waiting %.1fs for reset",
+                            self._rate_remaining, self._rate_limit, wait,
+                        )
+                        await asyncio.sleep(wait)
+                self._rate_remaining = None
+                self._rate_reset = None
 
     async def _post(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         payload = {"query": query, "variables": variables}
@@ -246,8 +257,12 @@ class AniListClient:
             self._update_rate_limit(response.headers)
 
             if response.status_code == 429:
+                self._effective_interval = min(self._max_interval, self._effective_interval * 1.5)
                 delay = self._backoff_delay(response.headers, 5.0)
-                logger.warning("AniList HTTP 429 — backing off %.1fs", delay)
+                logger.warning(
+                    "AniList HTTP 429 — slowing to %.2fs/req, backing off %.1fs",
+                    self._effective_interval, delay,
+                )
                 await asyncio.sleep(delay)
                 continue
 
@@ -268,7 +283,11 @@ class AniListClient:
             if errors:
                 messages = [e.get("message", "") or "" for e in errors]
                 if any("Too Many Requests" in m or e.get("status") == 429 for m, e in zip(messages, errors)):
-                    logger.warning("AniList rate limit (GraphQL) — backing off 5s")
+                    self._effective_interval = min(self._max_interval, self._effective_interval * 1.5)
+                    logger.warning(
+                        "AniList rate limit (GraphQL) — slowing to %.2fs/req, backing off 5s",
+                        self._effective_interval,
+                    )
                     await asyncio.sleep(5.0)
                     continue
                 raise AniListError("GraphQL error: " + "; ".join(messages))
