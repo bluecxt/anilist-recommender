@@ -472,6 +472,60 @@ def annotate_roots(
         media["is_root"] = 1 if (media["prequel_id"] is None and media["parent_id"] is None) else 0
 
 
+def compute_franchise_stats(
+    media_items: list[dict[str, Any]],
+    prequel_of: dict[int, int],
+    parent_of: dict[int, int],
+) -> None:
+    """Annotate each media dict with ``season_number`` + ``franchise_episodes``.
+
+    ``season_number`` = position in the prequel chain (root = 1); computed only
+    from SEQUEL/PREQUEL links, never the PARENT umbrella. ``franchise_episodes``
+    = sum of episodes of every anime sharing the same franchise root that is
+    present locally. Only relations involving the user's own list were fetched,
+    so an unknown/partial franchise degrades gracefully to the entry's own
+    episode count.
+    """
+    groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    roots: dict[int, int] = {}
+    for media in media_items:
+        mid = media.get("id")
+        if mid is None:
+            continue
+        root = chain_root(mid, prequel_of, parent_of)
+        roots[mid] = root
+        groups[root].append(media)
+
+    total_by_root: dict[int, int] = {}
+    for root, items in groups.items():
+        total_by_root[root] = sum(
+            int(item.get("episodes") or 0) for item in items if item.get("type") == "ANIME"
+        )
+
+    def _season(mid: int) -> int:
+        depth = 0
+        current, seen = mid, set()
+        while current is not None and current not in seen:
+            seen.add(current)
+            nxt = prequel_of.get(current)
+            if nxt is None:
+                break
+            current = nxt
+            depth += 1
+        return depth + 1
+
+    for media in media_items:
+        mid = media.get("id")
+        if mid is None:
+            continue
+        if media.get("type") == "ANIME":
+            media["season_number"] = _season(mid)
+            media["franchise_episodes"] = total_by_root.get(roots[mid])
+        else:
+            media["season_number"] = None
+            media["franchise_episodes"] = None
+
+
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 

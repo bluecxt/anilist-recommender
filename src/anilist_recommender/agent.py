@@ -247,7 +247,15 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
 def _length_label(media: dict[str, Any]) -> str:
     if media.get("type") == "ANIME":
         episodes = media.get("episodes")
-        return f"{episodes} eps" if episodes else "? eps"
+        base = f"{episodes} eps" if episodes else "? eps"
+        season = media.get("season_number")
+        total = media.get("franchise_episodes")
+        extras = []
+        if season and season > 1:
+            extras.append(f"saison {season}")
+        if total and (not episodes or total > episodes):
+            extras.append(f"total {total} eps")
+        return base if not extras else f"{base} · " + " · ".join(extras)
     chapters = media.get("chapters") or media.get("volumes")
     unit = "chap" if media.get("chapters") else "vol"
     return f"{chapters} {unit}" if chapters else "? length"

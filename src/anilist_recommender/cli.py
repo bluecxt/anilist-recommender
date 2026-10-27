@@ -133,6 +133,7 @@ async def _sync(username: str, settings: Settings) -> None:
 
     all_media = [w.media for w in works] + [c.media for c in candidates]
     scoring.annotate_roots(all_media, prequel_of, parent_of)
+    scoring.compute_franchise_stats(all_media, prequel_of, parent_of)
 
     candidate_ids = {c.media_id for c in candidates}
     edge_map: dict[tuple[int, int], int] = {}

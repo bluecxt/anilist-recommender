@@ -18,7 +18,7 @@ from .scoring import Candidate, Work
 
 # Bump when the stored format changes in a way a stale DB can't satisfy (the
 # CLI's `_require_synced` guard reads this from the `meta` table).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 CREATE_MEDIA = """
 CREATE TABLE media (
@@ -43,7 +43,9 @@ CREATE TABLE media (
   description TEXT,
   prequel_id INTEGER,
   parent_id INTEGER,
-  is_root INTEGER DEFAULT 1
+  is_root INTEGER DEFAULT 1,
+  season_number INTEGER,
+  franchise_episodes INTEGER
 )
 """
 
@@ -160,7 +162,7 @@ def reset_schema(db: sqlite3.Connection, embedding_dim: int) -> None:
 _MEDIA_COLUMNS = (
     "id, type, title_romaji, title_english, title_native, format, status, episodes, duration, "
     "chapters, volumes, country_of_origin, average_score, popularity, is_adult, genres, tags, "
-    "studios, description, prequel_id, parent_id, is_root"
+    "studios, description, prequel_id, parent_id, is_root, season_number, franchise_episodes"
 )
 
 
@@ -188,6 +190,8 @@ def _media_values(media: dict[str, Any]) -> tuple[Any, ...]:
         media.get("prequel_id"),
         media.get("parent_id"),
         media.get("is_root") if media.get("is_root") is not None else 1,
+        media.get("season_number"),
+        media.get("franchise_episodes"),
     )
 
 
@@ -210,7 +214,7 @@ def persist(
     for media in media_rows.values():
         db.execute(
             f"INSERT OR REPLACE INTO media ({_MEDIA_COLUMNS}) "
-            f"VALUES ({','.join('?' * 22)})",
+            f"VALUES ({','.join('?' * 24)})",
             _media_values(media),
         )
 
@@ -357,7 +361,9 @@ SELECT
   m.description,
   m.prequel_id,
   m.parent_id,
-  m.is_root
+  m.is_root,
+  m.season_number,
+  m.franchise_episodes
 FROM candidates c
 JOIN media m ON m.id = c.media_id
 """
@@ -645,7 +651,7 @@ def find_media_by_title(
     rows = db.execute(
         "SELECT id, type, title_romaji, title_english, title_native, format, status, "
         "average_score, popularity, episodes, chapters, volumes, genres, tags, description, "
-        "prequel_id, parent_id, is_root "
+        "prequel_id, parent_id, is_root, season_number, franchise_episodes "
         "FROM media "
         "WHERE title_romaji LIKE ? OR title_english LIKE ? OR title_native LIKE ? "
         "ORDER BY popularity DESC LIMIT ?",
