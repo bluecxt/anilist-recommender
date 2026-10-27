@@ -116,9 +116,11 @@ TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "enum": ["ANIME_TO_PRINT", "PRINT_TO_ANIME"],
                         "description": (
-                            "ANIME_TO_PRINT: user WATCHED an anime, wants its manga/LN source "
-                            "(to read the continuation). PRINT_TO_ANIME: user READ a manga/LN, "
-                            "wants its anime adaptation."
+                            "ANIME_TO_PRINT = the user WATCHED an ANIME and wants its MANGA/"
+                            "LIGHT-NOVEL source (to read the continuation). PRINT_TO_ANIME = the "
+                            "user READ a MANGA/LIGHT-NOVEL and wants its ANIME adaptation. If the "
+                            "user names an ANIME and asks for its manga/LN, it is ALWAYS "
+                            "ANIME_TO_PRINT — never the reverse."
                         ),
                     },
                     "target_print_format": {
@@ -180,7 +182,10 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "3. HAS a manga/LN, WANTS its anime adaptation → "
         "find_cross_media_adaptations(direction=PRINT_TO_ANIME).\n"
         "Rule of thumb: \"conseille-moi une suite …\" is about a CONTINUATION, not a discovery — "
-        "use the franchise or cross-media tool, never search.\n\n"
+        "use the franchise or cross-media tool, never search.\n"
+        "DIRECTION (critical, never invert): if the user names an ANIME they finished/watched and "
+        "asks for its manga/LN/roman → direction=ANIME_TO_PRINT. Use PRINT_TO_ANIME ONLY when the "
+        "user names a MANGA/LN they READ and asks for its anime.\n\n"
         "STRICT RULES:\n"
         "1. LANGUAGE (critical): always answer in FRENCH (the user's language), never in "
         "English or Chinese — even though the titles are Japanese and the data is English.\n"
@@ -195,11 +200,13 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "return a ready-made Markdown list — RELAY it as-is. Never describe the JSON "
         "structure or invent numbers.\n"
         "6. Be direct, analytical, zero filler.\n"
-        "7. If a tool returns nothing, answer in ONE French sentence: \"Aucun résultat avec ces "
-        "filtres.\" and, only if helpful, name ONE looser filter — never echo the tool's "
-        "parameters back as advice.\n"
+        "7. If a tool returns 'EMPTY_RESULT — …', output EXACTLY the French text after "
+        "'EMPTY_RESULT — ' and nothing else. Never improvise, never suggest filters, never "
+        "mention external websites (AniList, MyAnimeList, Kitsu, etc.).\n"
         "8. Keep filters minimal: leave min_user_score and only_finished_target unset unless "
-        "the user explicitly asks for 'mes préférés' (high score) or 'un LN/manga terminé'.\n\n"
+        "the user explicitly asks for 'mes préférés' (high score) or 'un LN/manga terminé'.\n"
+        "9. Never recommend external platforms or websites — your answer comes ONLY from the "
+        "local tools' results.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
 
@@ -339,7 +346,7 @@ def _franchise(args: dict[str, Any], db: Any) -> str:
         limit=_clamp_limit(args, 25, 50),
     )
     if not rows:
-        return "No unseen franchise entries found. Suggest loosening the filters."
+        return "EMPTY_RESULT — Aucune suite trouvée avec ces filtres."
     lines = [_relation_summary_from_row(r) for r in rows]
     return f"{len(lines)} unseen franchise entries (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
 
@@ -358,7 +365,7 @@ def _adaptations(args: dict[str, Any], db: Any) -> str:
         limit=_clamp_limit(args, 15, 40),
     )
     if not rows:
-        return "No cross-media adaptations found with these filters."
+        return "EMPTY_RESULT — Aucun résultat avec ces filtres."
     lines = [_relation_summary_from_row(r) for r in rows]
     return f"{len(lines)} cross-media links (sorted by your affinity):\n" + "\n".join(f"- {s}" for s in lines)
 

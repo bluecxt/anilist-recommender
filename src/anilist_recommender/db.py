@@ -502,9 +502,22 @@ def find_cross_media_adaptations(
         sql += " AND mr.target_status = 'FINISHED'"
 
     sql += " ORDER BY ul.affinity_weight DESC LIMIT ?"
-    params.append(limit)
+    fetch_limit = min(max(limit * 3, limit), 300)
+    params.append(fetch_limit)
 
-    return [dict(row) for row in db.execute(sql, params).fetchall()]
+    # De-duplicate targets (the same manga/LN is reachable from several anime entries,
+    # e.g. a TV series and its movie both point to the same source) keeping the
+    # highest-affinity source, then cap at the requested limit.
+    seen: set[int] = set()
+    results: list[dict[str, Any]] = []
+    for row in db.execute(sql, params).fetchall():
+        if row["target_id"] in seen:
+            continue
+        seen.add(row["target_id"])
+        results.append(dict(row))
+        if len(results) >= limit:
+            break
+    return results
 
 
 # --- Misc -------------------------------------------------------------------------------
