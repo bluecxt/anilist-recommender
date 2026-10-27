@@ -305,11 +305,28 @@ def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
     return max(1, min(limit, maximum))
 
 
-def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[str, Any]]:
+_MOVIE_HINT = re.compile(
+    r"\b(films?|movie|movies|ova|oav|sp[ée]cia(?:ux|les?)|special|specials|"
+    r"court[- ]m[ée]trage)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_movies(query: str) -> bool:
+    """The model sometimes flips `include_movies_or_ovas` on without being asked
+    (flooding results with OVAs/shorts). Deterministic guardrail: honor the flag
+    only when the user's own request mentions films/OVAs/specials."""
+    return bool(_MOVIE_HINT.search(query or ""))
+
+
+def _search_new(
+    args: dict[str, Any], db: Any, settings: Settings, query: str = ""
+) -> list[dict[str, Any]]:
+    include_movies = bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
     rows = db_module.search_new_recommendations(
         db,
         category=args.get("category") or "ANIME",
-        include_movies_or_ovas=bool(args.get("include_movies_or_ovas")),
+        include_movies_or_ovas=include_movies,
         min_length=args.get("min_length"),
         max_length=args.get("max_length"),
         max_volumes=args.get("max_volumes"),
@@ -670,11 +687,13 @@ def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
     return _format_cross_media(rows, settings.title_language, direction)
 
 
-def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | list[dict[str, Any]]:
+def execute_tool(
+    name: str, args: dict[str, Any], settings: Settings, query: str = ""
+) -> str | list[dict[str, Any]]:
     connection = db_module.connect(settings.db_path)
     try:
         if name == "search_new_recommendations":
-            return _search_new(args, connection, settings)
+            return _search_new(args, connection, settings, query)
         if name == "find_unseen_franchise_entries":
             return _franchise(args, connection, settings)
         if name == "find_cross_media_adaptations":
@@ -819,7 +838,7 @@ def run_agent(
         for call_id, name, args in calls:
             if on_tool_call is not None:
                 on_tool_call(name, args)
-            result = execute_tool(name, args, settings)
+            result = execute_tool(name, args, settings, query)
             if name == "search_new_recommendations" and isinstance(result, list):
                 if not result:
                     content = "Aucun résultat avec ces filtres."
