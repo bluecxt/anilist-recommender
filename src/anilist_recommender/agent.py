@@ -14,12 +14,26 @@ import time
 from typing import Any, Callable
 
 from openai import OpenAI
+from rich.markup import escape
 
 from . import db as db_module
 from . import embeddings as embeddings_module
 from .config import Settings, pick_title
 
 MAX_TOOL_ROUNDS = 8
+
+
+def _anilist_url(media_type: str | None, media_id: Any) -> str:
+    kind = "manga" if media_type == "MANGA" else "anime"
+    return f"https://anilist.co/{kind}/{media_id}"
+
+
+def anilist_link(title: str, media_type: str | None, media_id: Any) -> str:
+    """Wrap a title in an OSC-8 hyperlink (clickable — Ctrl+Click — in modern
+    terminals: Konsole, GNOME Terminal, kitty, iTerm2, Windows Terminal, …)."""
+    if not media_id or not title:
+        return title
+    return f"[link={_anilist_url(media_type, media_id)}]{escape(title)}[/link]"
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -268,6 +282,7 @@ def rank_candidates(
         )
         ranked.append(
             {
+                "media_id": row["media_id"],
                 "title": pick_title(row, language),
                 "title_romaji": row["title_romaji"],
                 "title_english": row["title_english"],
@@ -492,7 +507,10 @@ def _render_search(
         meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
         if has_query and item.get("semantic_similarity") is not None:
             meta += f" · sim {item['semantic_similarity']:.2f}"
-        lines.append(f"{index}. {item['title']} — {meta} · score {item['final_score']:.2f}")
+        lines.append(
+            f"{index}. {anilist_link(item['title'], item.get('type'), item.get('media_id'))} "
+            f"— {meta} · score {item['final_score']:.2f}"
+        )
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")
@@ -556,7 +574,7 @@ def _stars(weight: Any) -> str:
 
 
 def _target_title(row: dict[str, Any], language: str) -> str:
-    return pick_title(
+    title = pick_title(
         {
             "id": row.get("target_id"),
             "title_romaji": row.get("target_title_romaji"),
@@ -565,10 +583,11 @@ def _target_title(row: dict[str, Any], language: str) -> str:
         },
         language,
     )
+    return anilist_link(title, row.get("target_type"), row.get("target_id"))
 
 
 def _source_title(row: dict[str, Any], language: str) -> str:
-    return pick_title(
+    title = pick_title(
         {
             "id": row.get("source_id"),
             "title_romaji": row.get("source_title_romaji"),
@@ -577,6 +596,7 @@ def _source_title(row: dict[str, Any], language: str) -> str:
         },
         language,
     )
+    return anilist_link(title, row.get("source_type"), row.get("source_id"))
 
 
 def _target_meta(row: dict[str, Any]) -> str:

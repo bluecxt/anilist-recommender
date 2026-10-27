@@ -546,7 +546,7 @@ def find_cross_media_adaptations(
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
                m.title_native AS source_title_native,
-               m.format AS source_format
+               m.format AS source_format, m.type AS source_type
         FROM media_relations mr
         JOIN user_list ul ON ul.media_id = mr.source_id
         JOIN media m ON m.id = mr.source_id
@@ -562,7 +562,7 @@ def find_cross_media_adaptations(
         SELECT mr.*, ul.affinity_weight AS parent_weight, ul.score AS parent_score,
                m.title_romaji AS source_title_romaji, m.title_english AS source_title_english,
                m.title_native AS source_title_native,
-               m.format AS source_format
+               m.format AS source_format, m.type AS source_type
         FROM media_relations mr
         JOIN user_list ul ON ul.media_id = mr.source_id
         JOIN media m ON m.id = mr.source_id

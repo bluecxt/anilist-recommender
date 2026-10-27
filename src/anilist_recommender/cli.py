@@ -267,7 +267,7 @@ def _candidate_table(title: str, candidates: list[dict], language: str = "englis
     for index, candidate in enumerate(candidates, start=1):
         table.add_row(
             str(index),
-            pick_title(candidate, language),
+            agent.anilist_link(pick_title(candidate, language), candidate["type"], candidate["media_id"]),
             candidate["type"],
             candidate["format"] or "—",
             f"{candidate['graph_score']:.2f}",
@@ -394,25 +394,33 @@ def sequels(
     for index, row in enumerate(rows, start=1):
         table.add_row(
             str(index),
-            pick_title(
-                {
-                    "id": row["source_id"],
-                    "title_romaji": row["source_title_romaji"],
-                    "title_english": row["source_title_english"],
-                    "title_native": row["source_title_native"],
-                },
-                settings.title_language,
+            agent.anilist_link(
+                pick_title(
+                    {
+                        "id": row["source_id"],
+                        "title_romaji": row["source_title_romaji"],
+                        "title_english": row["source_title_english"],
+                        "title_native": row["source_title_native"],
+                    },
+                    settings.title_language,
+                ),
+                row["source_type"],
+                row["source_id"],
             ),
             f"{row['parent_weight']:+.2f}",
             row["relation_type"],
-            pick_title(
-                {
-                    "id": row["target_id"],
-                    "title_romaji": row["target_title_romaji"],
-                    "title_english": row["target_title_english"],
-                    "title_native": row["target_title_native"],
-                },
-                settings.title_language,
+            agent.anilist_link(
+                pick_title(
+                    {
+                        "id": row["target_id"],
+                        "title_romaji": row["target_title_romaji"],
+                        "title_english": row["target_title_english"],
+                        "title_native": row["target_title_native"],
+                    },
+                    settings.title_language,
+                ),
+                row["target_type"],
+                row["target_id"],
             ),
             row["target_format"] or "—",
             row["target_status"] or "—",
@@ -467,7 +475,7 @@ def explain(
                 console.print("[yellow]Plusieurs correspondances — précise le titre :[/yellow]")
                 for media in matches:
                     console.print(
-                        f"  • {pick_title(media, settings.title_language)} "
+                        f"  • {agent.anilist_link(pick_title(media, settings.title_language), media.get('type'), media.get('id'))} "
                         f"({media['type']}, {media['format'] or '?'})"
                     )
                 raise typer.Exit(1)
@@ -498,7 +506,7 @@ def explain(
             title_of = {
                 row["id"]: dict(row)
                 for row in connection.execute(
-                    f"SELECT id, title_romaji, title_english, title_native FROM media "
+                    f"SELECT id, type, title_romaji, title_english, title_native FROM media "
                     f"WHERE id IN ({placeholders})",
                     sorted(needed),
                 ).fetchall()
@@ -506,7 +514,11 @@ def explain(
 
         def name(media_id: int) -> str:
             info = title_of.get(media_id)
-            return pick_title(info, settings.title_language) if info else f"#{media_id}"
+            if not info:
+                return f"#{media_id}"
+            return agent.anilist_link(
+                pick_title(info, settings.title_language), info.get("type"), media_id
+            )
         # Recompute the amortized graph score from the stored edges (same math
         # as sync — see scoring.compute_graph_scores).
         raw_contribs: list[tuple[int, float]] = []
@@ -526,7 +538,9 @@ def explain(
 
     # --- header
     fmt = " · ".join(bit for bit in (chosen.get("format"), agent._length_label(chosen)) if bit)
-    console.print(f"[bold]{pick_title(chosen, settings.title_language)}[/bold] — {fmt}")
+    console.print(
+        f"[bold]{agent.anilist_link(pick_title(chosen, settings.title_language), chosen.get('type'), media_id)}[/bold] — {fmt}"
+    )
     console.print(
         f"type [cyan]{chosen['type']}[/cyan] · statut [cyan]{chosen.get('status') or '?'}[/cyan] · "
         f"note communautaire [cyan]{chosen.get('average_score') or '?'}[/cyan] · "
@@ -574,14 +588,18 @@ def explain(
         root_label = "—" if root_id == sid else name(root_id)
         factor = damped.get(sid, 0.0) / raw if raw else 0.0
         table.add_row(
-            pick_title(
-                {
-                    "id": sid,
-                    "title_romaji": row["title_romaji"],
-                    "title_english": row["title_english"],
-                    "title_native": row["title_native"],
-                },
-                settings.title_language,
+            agent.anilist_link(
+                pick_title(
+                    {
+                        "id": sid,
+                        "title_romaji": row["title_romaji"],
+                        "title_english": row["title_english"],
+                        "title_native": row["title_native"],
+                    },
+                    settings.title_language,
+                ),
+                row.get("type"),
+                sid,
             ),
             f"{row['affinity_weight']:+.2f}",
             str(row["rating"]),
