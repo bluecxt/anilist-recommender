@@ -145,7 +145,7 @@ def get_settings() -> Settings:
         ollama_base_url=str(
             _pick(file_cfg, "ollama_base_url", "OLLAMA_BASE_URL", "http://localhost:11434/v1")
         ),
-        ollama_model=str(_pick(file_cfg, "ollama_model", "OLLAMA_MODEL", "qwen2.5:7b")),
+        ollama_model=str(_pick(file_cfg, "ollama_model", "OLLAMA_MODEL", "llama3.1:8b")),
         embedding_model=embedding_model,
         embedding_dim=_resolve_embedding_dim(embedding_model),
         max_graph_sources=_pick_int(file_cfg, "max_graph_sources", "ANILIST_MAX_GRAPH_SOURCES", 60),

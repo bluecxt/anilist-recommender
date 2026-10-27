@@ -15,7 +15,7 @@ username = "YOUR_ANILIST_USERNAME"
 
 # Local LLM (Ollama). 100% of the VRAM is reserved for this model.
 # ollama_base_url = "http://localhost:11434/v1"
-# ollama_model = "qwen2.5:7b"
+# ollama_model = "llama3.1:8b"
 
 # Embeddings always run on CPU (device="cpu").
 # embedding_model = "intfloat/multilingual-e5-small"   # or "BAAI/bge-m3"

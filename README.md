@@ -15,7 +15,7 @@ synthèse est produite par un **LLM local (Ollama)** via *tool calling* strict.
 
 - **OS** : NixOS.
 - **GPU** : RTX 5070 Laptop, **8 Go de VRAM**.
-- **100 % de la VRAM → Ollama** (`http://localhost:11434/v1`, modèle par défaut `qwen2.5:7b`).
+- **100 % de la VRAM → Ollama** (`http://localhost:11434/v1`, modèle par défaut `llama3.1:8b`).
 - **0 Mo de VRAM pour les embeddings** : `sentence-transformers` tourne **sur CPU**
   (`device="cpu"`), modèle par défaut `intfloat/multilingual-e5-small` (384 dims).
   `BAAI/bge-m3` (1024 dims) est disponible via `EMBEDDING_MODEL`.
@@ -32,7 +32,7 @@ nix develop          # génère flake.lock au premier lancement
 uv sync
 
 # 3. Lancer Ollama et tirer le modèle (si pas déjà fait)
-ollama pull qwen2.5:7b
+ollama pull llama3.1:8b
 ```
 
 Le `shellHook` du flake exporte `LD_LIBRARY_PATH` (libstdc++ / libz) pour que les
@@ -114,7 +114,7 @@ cp config.example.toml config.toml
 # config.toml
 username = "ton-pseudo"            # fixe le profil AniList
 # data_dir = "data"
-# ollama_model = "qwen2.5:7b"
+# ollama_model = "llama3.1:8b"
 # embedding_model = "intfloat/multilingual-e5-small"
 # max_graph_sources = 60
 ```
@@ -130,7 +130,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | `ANILIST_USERNAME` | — | Nom d'utilisateur AniList |
 | `ANILIST_DATA_DIR` | `data/` | Dossier contenant `anilist_local.db` + `taste_profile.json` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Endpoint OpenAI-compatible d'Ollama |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Modèle LLM (doit supporter le tool calling) |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Modèle LLM (doit supporter le tool calling) |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
 | `ANILIST_REQUEST_INTERVAL` | `0.85` | Intervalle minimal (anti-burst) entre deux requêtes (s) ; le quota est piloté par les headers `X-RateLimit-*` |

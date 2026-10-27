@@ -171,8 +171,9 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "   - <=5 results: analyze each one in depth — cite graph_score, positive_sources, "
         "negative_warnings, exact format and length.\n"
         "   - >5 results: full Markdown table or exhaustive list, never truncate.\n"
-        "5. Presentation: for franchise/cross-media results, one line per item as "
-        "\"SOURCE → TARGET (relation, format, length, status, avg score)\".\n"
+        "5. Presentation: for franchise/cross-media results, print each item's `summary` "
+        "field VERBATIM (it already contains the correct numbers) — do not rephrase or "
+        "recompute lengths/scores.\n"
         "6. Be direct, analytical, zero filler.\n"
         "7. If a tool returns nothing, say so plainly and suggest looser filters.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
@@ -268,6 +269,53 @@ def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[
     return rank_candidates(rows, similarities, has_query)
 
 
+def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
+    if episodes:
+        return f"{episodes} eps"
+    if chapters:
+        return f"{chapters} chap"
+    if volumes:
+        return f"{volumes} vol"
+    return "?"
+
+
+def _relation_summary(
+    source_title: Any, target_title: Any, relation_type: Any, target_format: Any,
+    status: Any, episodes: Any, chapters: Any, volumes: Any, score: Any,
+) -> str:
+    bits = [b for b in (relation_type, target_format, _fmt_len(episodes, chapters, volumes), status) if b]
+    summary = f"{source_title} → {target_title} ({' · '.join(bits)}"
+    if score is not None:
+        summary += f" · score {score}"
+    return summary + ")"
+
+
+def _relation_row(row: dict[str, Any], *, include_country: bool) -> dict[str, Any]:
+    item = {
+        "source_title": row.get("source_title_romaji") or row.get("source_title_english"),
+        "source_format": row.get("source_format"),
+        "my_score": row.get("parent_score"),
+        "my_affinity": round(row.get("parent_weight") or 0.0, 2),
+        "relation_type": row.get("relation_type"),
+        "target_title": row.get("target_title"),
+        "target_format": row.get("target_format"),
+        "target_status": row.get("target_status"),
+        "target_episodes": row.get("target_episodes"),
+        "target_chapters": row.get("target_chapters"),
+        "target_volumes": row.get("target_volumes"),
+        "target_score": row.get("target_score"),
+    }
+    if include_country:
+        item["target_type"] = row.get("target_type")
+        item["target_country"] = row.get("target_country")
+    item["summary"] = _relation_summary(
+        item["source_title"], item["target_title"], item["relation_type"],
+        item["target_format"], item["target_status"], item["target_episodes"],
+        item["target_chapters"], item["target_volumes"], item["target_score"],
+    )
+    return item
+
+
 def _franchise(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
     rows = db_module.find_unseen_franchise_entries(
         db,
@@ -278,25 +326,7 @@ def _franchise(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
         include_unreleased=bool(args.get("include_unreleased")),
         limit=_clamp_limit(args, 25, 50),
     )
-    return [
-        {
-            "source_title": r.get("source_title_romaji") or r.get("source_title_english"),
-            "source_format": r.get("source_format"),
-            "my_score": r.get("parent_score"),
-            "my_affinity": round(r.get("parent_weight") or 0.0, 2),
-            "relation_type": r.get("relation_type"),
-            "target_title": r.get("target_title"),
-            "target_type": r.get("target_type"),
-            "target_format": r.get("target_format"),
-            "target_country": r.get("target_country"),
-            "target_status": r.get("target_status"),
-            "target_episodes": r.get("target_episodes"),
-            "target_chapters": r.get("target_chapters"),
-            "target_volumes": r.get("target_volumes"),
-            "target_score": r.get("target_score"),
-        }
-        for r in rows
-    ]
+    return [_relation_row(r, include_country=True) for r in rows]
 
 
 def _adaptations(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
@@ -308,23 +338,7 @@ def _adaptations(args: dict[str, Any], db: Any) -> list[dict[str, Any]]:
         only_finished_target=bool(args.get("only_finished_target")),
         limit=_clamp_limit(args, 15, 40),
     )
-    return [
-        {
-            "source_title": r.get("source_title_romaji") or r.get("source_title_english"),
-            "source_format": r.get("source_format"),
-            "my_score": r.get("parent_score"),
-            "my_affinity": round(r.get("parent_weight") or 0.0, 2),
-            "relation_type": r.get("relation_type"),
-            "target_title": r.get("target_title"),
-            "target_format": r.get("target_format"),
-            "target_status": r.get("target_status"),
-            "target_episodes": r.get("target_episodes"),
-            "target_chapters": r.get("target_chapters"),
-            "target_volumes": r.get("target_volumes"),
-            "target_score": r.get("target_score"),
-        }
-        for r in rows
-    ]
+    return [_relation_row(r, include_country=False) for r in rows]
 
 
 def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> list[dict[str, Any]]:
