@@ -18,7 +18,7 @@ from .scoring import Candidate, Work
 
 # Bump when the stored format changes in a way a stale DB can't satisfy (the
 # CLI's `_require_synced` guard reads this from the `meta` table).
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CREATE_MEDIA = """
 CREATE TABLE media (

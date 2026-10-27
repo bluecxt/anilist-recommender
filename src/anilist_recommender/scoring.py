@@ -186,6 +186,8 @@ def _source_evidence(work: Work, rating: int) -> dict[str, Any]:
     ``title_language`` — the pre-formatted-string approach froze titles in romaji.
     """
     return {
+        "media_id": work.media_id,
+        "type": work.media.get("type"),
         "title_romaji": work.media.get("title_romaji"),
         "title_english": work.media.get("title_english"),
         "title_native": work.media.get("title_native"),

@@ -269,6 +269,8 @@ def _format_source(source: dict[str, Any], language: str, colorize: bool = False
     if isinstance(source, str):
         return source
     title = pick_title(source, language)
+    if colorize:
+        title = anilist_link(title, source.get("type"), source.get("media_id"))
     status = source.get("status")
     score = source.get("score")
     if status == "DROPPED":
@@ -294,6 +296,8 @@ def _format_source_compact(source: dict[str, Any], language: str, colorize: bool
     if isinstance(source, str):
         return source
     title = pick_title(source, language)
+    if colorize:
+        title = anilist_link(title, source.get("type"), source.get("media_id"))
     status = source.get("status")
     score = source.get("score")
     if status == "DROPPED":
