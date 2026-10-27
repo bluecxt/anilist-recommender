@@ -182,6 +182,7 @@ def sync(username: str = typer.Argument(None, help="Your AniList username.")) ->
     username = username or settings.username
     if not username:
         console.print("[red]Provide a username: `anilist-rec sync <username>`[/red]")
+        console.print("[dim]Or set it in config.toml (see config.example.toml) or $ANILIST_USERNAME.[/dim]")
         raise typer.Exit(1)
     asyncio.run(_sync(username, settings))
 
@@ -345,6 +346,37 @@ def sequels(
     console.print(table)
 
 
+# --------------------------------------------------------------------------- config
+
+
+@app.command()
+def config() -> None:
+    """Show where the config file is read from and the effective settings."""
+    settings = get_settings()
+
+    if settings.config_path:
+        console.print(f"[bold]Config file:[/bold] {settings.config_path}")
+    else:
+        console.print("[yellow]No config file found.[/yellow]")
+        console.print("Searched (first match wins):")
+        console.print("  1. $ANILIST_CONFIG")
+        console.print("  2. ./config.toml")
+        console.print("  3. ~/.config/anilist-recommender/config.toml")
+        console.print("Create one with: cp config.example.toml config.toml")
+
+    table = Table(title="Effective settings")
+    table.add_column("Key")
+    table.add_column("Value")
+    table.add_row("username", settings.username or "(unset)")
+    table.add_row("data_dir", str(settings.data_dir))
+    table.add_row("ollama_model", settings.ollama_model)
+    table.add_row("ollama_base_url", settings.ollama_base_url)
+    table.add_row("embedding_model", settings.embedding_model)
+    table.add_row("max_graph_sources", str(settings.max_graph_sources))
+    table.add_row("request_interval", str(settings.request_interval))
+    console.print(table)
+
+
 # --------------------------------------------------------------------------- ask / chat
 
 
@@ -353,17 +385,22 @@ def _log_tool(name: str, args: dict) -> None:
 
 
 @app.command()
-def ask(query: str = typer.Argument(..., help="Your request in natural language.")) -> None:
+def ask(
+    query: str = typer.Argument(..., help="Your request in natural language."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show the LLM's tool calls."),
+) -> None:
     """One-shot recommendation request through the local LLM."""
     settings = get_settings()
     _require_synced(settings)
     console.print("[cyan]Thinking (local LLM)…[/cyan]")
-    answer = agent.run_agent(query, settings, on_tool_call=_log_tool)
+    answer = agent.run_agent(query, settings, on_tool_call=_log_tool if verbose else None)
     console.print(Markdown(answer))
 
 
 @app.command()
-def chat() -> None:
+def chat(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show the LLM's tool calls."),
+) -> None:
     """Interactive conversation keeping session history to refine recommendations."""
     settings = get_settings()
     _require_synced(settings)
@@ -380,7 +417,7 @@ def chat() -> None:
             break
         if not query:
             continue
-        answer = agent.run_agent(query, settings, history=history, on_tool_call=_log_tool)
+        answer = agent.run_agent(query, settings, history=history, on_tool_call=_log_tool if verbose else None)
         console.print(Markdown(answer))
         history.append({"role": "user", "content": query})
         history.append({"role": "assistant", "content": answer})

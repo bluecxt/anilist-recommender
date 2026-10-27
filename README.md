@@ -46,6 +46,9 @@ wheels *manylinux* de `torch` et `sqlite-vec` se chargent sur NixOS. Les
 ```bash
 uv run anilist-rec --help
 
+# 0. Voir où la config est lue + les réglages effectifs
+uv run anilist-rec config
+
 # 1. Synchroniser (anime + manga/LN/manhwa, graphe relationnel, embeddings CPU)
 uv run anilist-rec sync
 
