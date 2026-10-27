@@ -400,11 +400,56 @@ def rank_candidates(
     return ranked
 
 
-def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
+def _to_int(value: Any, default: int | None = None) -> int | None:
+    """Coerce a tool arg to int, treating 'null'/'none'/'' and non-numerics as default.
+
+    llama3.1 often emits ``"5"`` (quoted) or ``"null"`` (string) instead of the
+    proper JSON ``5`` / ``null`` — passing those raw into SQL broke the filters.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("", "null", "none"):
+            return default
+        try:
+            return int(float(s))
+        except ValueError:
+            return default
     try:
-        limit = int(args.get("limit") or default)
+        return int(value)
     except (TypeError, ValueError):
-        limit = default
+        return default
+
+
+def _to_bool(value: Any) -> bool:
+    """Coerce a tool arg to bool, handling the strings 'true'/'false'/'1'."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _to_str_list(value: Any) -> list[str]:
+    """Coerce a tool arg to a list of strings; 'null'/'' → []. A bare string → [it]."""
+    if isinstance(value, list):
+        return [str(x) for x in value if str(x).strip()]
+    if isinstance(value, str) and value.strip().lower() not in ("", "null", "none"):
+        return [value]
+    return []
+
+
+def _to_str(value: Any, default: str) -> str:
+    """Coerce an enum-ish arg to str, mapping 'null'/'none'/'' to the default."""
+    if value is None:
+        return default
+    s = str(value).strip()
+    return default if s.lower() in ("", "null", "none") else s
+
+
+def _clamp_limit(args: dict[str, Any], default: int, maximum: int) -> int:
+    limit = _to_int(args.get("limit"), default)
     return max(1, min(limit, maximum))
 
 
@@ -425,18 +470,18 @@ def _wants_movies(query: str) -> bool:
 def _search_new(
     args: dict[str, Any], db: Any, settings: Settings, query: str = ""
 ) -> list[dict[str, Any]]:
-    include_movies = bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
+    include_movies = _to_bool(args.get("include_movies_or_ovas")) and _wants_movies(query)
     rows = db_module.search_new_recommendations(
         db,
-        category=args.get("category") or "ANIME",
+        category=_to_str(args.get("category"), "ANIME"),
         include_movies_or_ovas=include_movies,
-        min_length=args.get("min_length"),
-        max_length=args.get("max_length"),
-        max_volumes=args.get("max_volumes"),
-        source_pool=args.get("source_pool") or "BOTH",
-        only_finished=bool(args.get("only_finished")),
-        required=args.get("required_genres_or_tags"),
-        excluded=args.get("excluded_genres_or_tags"),
+        min_length=_to_int(args.get("min_length")),
+        max_length=_to_int(args.get("max_length")),
+        max_volumes=_to_int(args.get("max_volumes")),
+        source_pool=_to_str(args.get("source_pool"), "BOTH"),
+        only_finished=_to_bool(args.get("only_finished")),
+        required=_to_str_list(args.get("required_genres_or_tags")),
+        excluded=_to_str_list(args.get("excluded_genres_or_tags")),
         limit=_clamp_limit(args, 10, 30),
     )
     query = (args.get("semantic_query") or "").strip()
@@ -773,11 +818,11 @@ def _format_cross_media(rows: list[dict[str, Any]], language: str, direction: st
 def _franchise(args: dict[str, Any], db: Any, settings: Settings) -> str:
     rows = db_module.find_unseen_franchise_entries(
         db,
-        source_type=args.get("source_type") or "ANIME",
-        relation_types=args.get("relation_types") or ["SEQUEL", "SIDE_STORY"],
-        target_formats=args.get("target_formats"),
-        min_parent_score=int(args.get("min_parent_score") or 0),
-        include_unreleased=bool(args.get("include_unreleased")),
+        source_type=_to_str(args.get("source_type"), "ANIME"),
+        relation_types=_to_str_list(args.get("relation_types")) or ["SEQUEL", "SIDE_STORY"],
+        target_formats=_to_str_list(args.get("target_formats")) or None,
+        min_parent_score=_to_int(args.get("min_parent_score"), 0),
+        include_unreleased=_to_bool(args.get("include_unreleased")),
         limit=_clamp_limit(args, 25, 50),
     )
     if not rows:
@@ -786,17 +831,16 @@ def _franchise(args: dict[str, Any], db: Any, settings: Settings) -> str:
 
 
 def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
-    fmt = (args.get("target_print_format") or "ANY").strip().upper()
+    fmt = _to_str(args.get("target_print_format"), "ANY").upper()
     if fmt in ("LIGHT_NOVEL", "LN"):
         fmt = "NOVEL"
-    direction = args.get("direction") or "ANIME_TO_PRINT"
-    min_score = int(args.get("min_user_score") or 0)
+    direction = _to_str(args.get("direction"), "ANIME_TO_PRINT")
     rows = db_module.find_cross_media_adaptations(
         db,
         direction=direction,
         target_print_format=fmt,
-        min_user_score=min_score,
-        only_finished_target=bool(args.get("only_finished_target")),
+        min_user_score=_to_int(args.get("min_user_score"), 0),
+        only_finished_target=_to_bool(args.get("only_finished_target")),
         limit=_clamp_limit(args, 15, 40),
     )
     if not rows:
