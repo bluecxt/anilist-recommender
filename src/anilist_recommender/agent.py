@@ -286,17 +286,28 @@ def _format_source(source: dict[str, Any], language: str, colorize: bool = False
 
 
 def _format_source_compact(source: dict[str, Any], language: str, colorize: bool = True) -> str:
-    """Compact form of `_format_source` for a list: ``« Title » 85/100``."""
+    """Compact form for a list: ``« Title » 85/100`` (score heat-colored).
+
+    Dropped/paused sources carry a red status instead of a score — an unrated
+    drop must not be shown as ``0/100``.
+    """
     if isinstance(source, str):
         return source
     title = pick_title(source, language)
+    status = source.get("status")
     score = source.get("score")
-    if score and score > 0:
+    if status == "DROPPED":
+        note = "[red]abandonné[/red]" if colorize else "abandonné"
+    elif status == "PAUSED":
+        note = "[red]en pause[/red]" if colorize else "en pause"
+    elif score and score > 0:
         text = f"{int(score)}/100"
         if colorize:
             text = _heat(float(score), 0.0, 100.0, text)
-        return f"« {title} » {text}"
-    return f"« {title} »"
+        note = text
+    else:
+        note = ""
+    return f"« {title} »" + (f" {note}" if note else "")
 
 
 def rank_candidates(
@@ -591,12 +602,13 @@ def _render_search(
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")
-        if item.get("positive_sources"):
-            proches = " · ".join(_format_source_compact(s, language) for s in item["positive_sources"][:6])
+        sources = list(item.get("positive_sources") or [])
+        sources += item.get("negative_warnings") or []
+        if sources:
+            # Highest user score first (strongest positive evidence), unrated last.
+            sources.sort(key=lambda s: -(s.get("score") or 0))
+            proches = " · ".join(_format_source_compact(s, language) for s in sources[:6])
             lines.append(f"   proche de : {proches}")
-        if item.get("negative_warnings"):
-            warnings = " · ".join(_format_source(s, language, colorize=True) for s in item["negative_warnings"][:2])
-            lines.append(f"   [red]⚠ recommandé aussi par {warnings}[/red]")
         if index < len(items):
             lines.append("")
     return "\n".join(lines)
