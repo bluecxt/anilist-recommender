@@ -1,5 +1,10 @@
 # anilist-recommender
 
+> 🔒 **100 % local & hors-ligne.** Ton profil AniList, tes notes, l'historique, les
+> embeddings et le LLM tournent **entièrement sur ta machine**. Aucun cloud, aucune
+> télémétrie, aucune donnée envoyée à un serveur tiers (hormis le `sync`, qui ne fait
+> qu'interroger l'API publique AniList).
+
 Agent local en ligne de commande qui recommande des **animés, mangas, light novels,
 manhwas et manhuas** à partir de ton profil AniList (notes, statuts, favoris), du
 **graphe collaboratif de recommandations**, du **graphe relationnel** (suites, OAV,
@@ -10,17 +15,6 @@ affichée telle quelle.
 
 > Stack minimale : `httpx` · `sqlite3` + `sqlite-vec` · `sentence-transformers` (CPU)
 > · `pydantic` + `openai` · `typer` + `rich`. **Aucun** LangChain / LlamaIndex / ChromaDB.
-
----
-
-## Matériel & allocation mémoire (strict)
-
-- **OS** : NixOS.
-- **GPU** : RTX 5070 Laptop, **8 Go de VRAM**.
-- **100 % de la VRAM → Ollama** (`http://localhost:11434/v1`, modèle par défaut `llama3.1:8b`).
-- **0 Mo de VRAM pour les embeddings** : `sentence-transformers` tourne **sur CPU**
-  (`device="cpu"`), modèle par défaut `intfloat/multilingual-e5-small` (384 dims).
-  `BAAI/bge-m3` (1024 dims) est disponible via `EMBEDDING_MODEL`.
 
 ---
 
