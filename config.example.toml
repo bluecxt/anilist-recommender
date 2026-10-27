@@ -14,6 +14,9 @@ username = "YOUR_ANILIST_USERNAME"
 # native (Japanese script), any of which may be empty — we fall back automatically.
 # title_language = "english"   # english | romaji | native
 
+# Output prose language (list labels + LLM "why" blurbs). Titles are separate.
+# language = "fr"              # fr | en
+
 # Where the local database + taste profile live.
 # data_dir = "data"
 

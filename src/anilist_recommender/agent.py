@@ -19,6 +19,7 @@ from rich.markup import escape
 
 from . import db as db_module
 from . import embeddings as embeddings_module
+from . import i18n
 from .config import Settings, pick_title
 
 MAX_TOOL_ROUNDS = 8
@@ -244,58 +245,54 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
     )
 
 
-def _length_label(media: dict[str, Any]) -> str:
+def _length_label(media: dict[str, Any], lang: str = "fr") -> str:
     if media.get("type") == "ANIME":
         episodes = media.get("episodes")
-        base = f"{episodes} eps" if episodes else "? eps"
+        base = f"{episodes} {i18n.t(lang, 'eps')}" if episodes else f"? {i18n.t(lang, 'eps')}"
         season = media.get("season_number")
         total = media.get("franchise_episodes")
         extras = []
         if season and season > 1:
-            extras.append(f"saison {season}")
+            extras.append(i18n.t(lang, "season", n=season))
         if total and (not episodes or total > episodes):
-            extras.append(f"total {total} eps")
+            extras.append(i18n.t(lang, "total_eps", n=total))
         return base if not extras else f"{base} · " + " · ".join(extras)
     chapters = media.get("chapters") or media.get("volumes")
-    unit = "chap" if media.get("chapters") else "vol"
-    return f"{chapters} {unit}" if chapters else "? length"
+    unit = i18n.t(lang, "chap") if media.get("chapters") else i18n.t(lang, "vol")
+    return f"{chapters} {unit}" if chapters else i18n.t(lang, "unknown_len")
 
 
-_LIST_STATUS_FR = {
-    "DROPPED": "abandonné",
-    "PAUSED": "en pause",
-}
-
-
-def _format_source(source: dict[str, Any], language: str, colorize: bool = False) -> str:
-    """Phrase one recommending source in natural French, in the configured title
-    language (the DB stores the title in all three languages, never pre-formatted).
+def _format_source(source: dict[str, Any], settings: Settings, colorize: bool = False) -> str:
+    """Phrase one recommending source in the configured prose language, with the
+    title in ``title_language`` (the DB stores the title in all three languages,
+    never pre-formatted).
 
     Legacy guard: a plain string (pre-structured DB) is passed through as-is.
     With ``colorize=True`` the 0-100 score is heat-colored (red→green).
     """
     if isinstance(source, str):
         return source
-    title = pick_title(source, language)
+    lang = settings.language
+    title = pick_title(source, settings.title_language)
     if colorize:
         title = anilist_link(title, source.get("type"), source.get("media_id"))
     status = source.get("status")
     score = source.get("score")
     if status == "DROPPED":
-        suffix = ", abandonné"
+        suffix = ", " + i18n.t(lang, "dropped")
     elif status == "PAUSED":
-        suffix = ", en pause"
+        suffix = ", " + i18n.t(lang, "paused")
     elif score and score > 0:
         score_text = str(int(score))
         if colorize:
             score_text = _heat(float(score), 0.0, 100.0, score_text)
-        suffix = f", noté {score_text}/100"
+        suffix = ", " + i18n.t(lang, "rated", score=score_text)
     else:
         suffix = ""
     return f"« {title} »{suffix}"
 
 
-def _format_source_compact(source: dict[str, Any], language: str, colorize: bool = True) -> str:
+def _format_source_compact(source: dict[str, Any], settings: Settings, colorize: bool = True) -> str:
     """Compact form for a list: ``« Title » 85/100`` (score heat-colored).
 
     Dropped/paused sources carry a red status instead of a score — an unrated
@@ -303,15 +300,16 @@ def _format_source_compact(source: dict[str, Any], language: str, colorize: bool
     """
     if isinstance(source, str):
         return source
-    title = pick_title(source, language)
+    lang = settings.language
+    title = pick_title(source, settings.title_language)
     if colorize:
         title = anilist_link(title, source.get("type"), source.get("media_id"))
     status = source.get("status")
     score = source.get("score")
     if status == "DROPPED":
-        note = "[red]abandonné[/red]" if colorize else "abandonné"
+        note = f"[red]{i18n.t(lang, 'dropped')}[/red]" if colorize else i18n.t(lang, "dropped")
     elif status == "PAUSED":
-        note = "[red]en pause[/red]" if colorize else "en pause"
+        note = f"[red]{i18n.t(lang, 'paused')}[/red]" if colorize else i18n.t(lang, "paused")
     elif score and score > 0:
         text = f"{int(score)}/100"
         if colorize:
@@ -326,7 +324,7 @@ def rank_candidates(
     rows: list[dict[str, Any]],
     similarities: dict[int, float],
     has_query: bool,
-    language: str = "english",
+    settings: Settings,
 ) -> list[dict[str, Any]]:
     """Final blended score per candidate.
 
@@ -379,7 +377,7 @@ def rank_candidates(
         ranked.append(
             {
                 "media_id": row["media_id"],
-                "title": pick_title(row, language),
+                "title": pick_title(row, settings.title_language),
                 "title_romaji": row["title_romaji"],
                 "title_english": row["title_english"],
                 "title_native": row["title_native"],
@@ -389,7 +387,7 @@ def rank_candidates(
                 "genres": row["genres"],
                 "tags": row["tags"],
                 "description": row["description"],
-                "length": _length_label(row),
+                "length": _length_label(row, settings.language),
                 "episodes": row["episodes"],
                 "chapters": row["chapters"],
                 "volumes": row["volumes"],
@@ -535,7 +533,7 @@ def _search_new(
     if has_query:
         ids = [row["media_id"] for row in rows]
         similarities = embeddings_module.query_similarities(db, semantic, ids, settings)
-    return rank_candidates(rows, similarities, has_query, settings.title_language)
+    return rank_candidates(rows, similarities, has_query, settings)
 
 
 def _strip_fences(text: str) -> str:
@@ -590,7 +588,7 @@ def _parse_annotations_json(text: str, count: int) -> dict[int, str]:
 
 def _annotation_llm(client: Any, settings: Settings, prompt: str) -> str:
     messages = [
-        {"role": "system", "content": "Tu es concis, factuel, tu réponds en français et en JSON strict."},
+        {"role": "system", "content": i18n.t(settings.language, "annotation_system")},
         {"role": "user", "content": prompt},
     ]
     options = {"options": {"num_ctx": 8192, "temperature": 0.3}}
@@ -613,7 +611,7 @@ def _annotation_llm(client: Any, settings: Settings, prompt: str) -> str:
 def _annotate_search(
     items: list[dict[str, Any]], client: Any, settings: Settings
 ) -> dict[int, str]:
-    """One short French 'why' sentence per recommendation, grounded in the data.
+    """One short 'why' sentence per recommendation, grounded in the data.
 
     The LLM only phrases the reason; titles/formats stay rendered by the code, so a
     failure here never breaks the list — the caller falls back to `positive_sources`.
@@ -622,6 +620,7 @@ def _annotate_search(
     """
     if not items:
         return {}
+    lang = settings.language
     profile = load_profile(settings)
     top_genres = ", ".join(g["name"] for g in (profile.get("top_genres") or [])[:6])
     top_tags = ", ".join(t["name"] for t in (profile.get("top_tags") or [])[:6])
@@ -631,23 +630,23 @@ def _annotate_search(
         genres = ", ".join(item.get("genres") or [])[:120]
         tags = ", ".join((item.get("tags") or [])[:6])
         sources = " · ".join(
-            _format_source(s, settings.title_language) for s in (item.get("positive_sources") or [])
+            _format_source(s, settings) for s in (item.get("positive_sources") or [])
         )[:160] or "—"
         synopsis = (item.get("description") or "").strip()[:140]
         bullets.append(
             f"{index}. {item['title']} | {item.get('format')} {item['length']} | "
-            f"genres: {genres} | tags: {tags} | proche de: {sources} | synopsis: {synopsis}"
+            f"genres: {genres} | tags: {tags} | {i18n.t(lang, 'proche_de')}: {sources} | "
+            f"synopsis: {synopsis}"
         )
 
     prompt = (
-        "Pour chaque recommandation, écris UNE phrase française courte (≤ 20 mots) expliquant "
-        "POURQUOI elle plaira à l'utilisateur. Appuie-toi sur le synopsis fourni (et sur les "
-        "genres/tags/œuvres proches). N'invente aucun élément d'intrigue absent du synopsis, "
-        "ne répète pas le titre, ne cite pas de chiffres.\n\n"
-        f"Genres préférés : {top_genres}\nTags préférés : {top_tags}\n\n"
+        i18n.t(lang, "annotation_instruction")
+        + "\n\n"
+        + f"{i18n.t(lang, 'preferred_genres')} : {top_genres}\n"
+        + f"{i18n.t(lang, 'preferred_tags')} : {top_tags}\n\n"
         + "\n".join(bullets)
-        + '\n\nRéponds EXACTEMENT un objet JSON unique, sans texte autour : {"1": "phrase", '
-        '"2": "phrase", …} — une entrée par numéro, rien d’autre.'
+        + "\n\n"
+        + i18n.t(lang, "annotation_json")
     )
 
     try:
@@ -680,18 +679,19 @@ def _annotate_search(
 
 
 def _render_search(
-    items: list[dict[str, Any]], annotations: dict[int, str], has_query: bool, language: str = "english"
+    items: list[dict[str, Any]], annotations: dict[int, str], has_query: bool, settings: Settings
 ) -> str:
-    lines = [f"{len(items)} recommandations (triées par affinité) :\n"]
+    lang = settings.language
+    lines = [i18n.t(lang, "recommendations_header", n=len(items)) + "\n"]
     for index, item in enumerate(items, start=1):
         meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
         if has_query and item.get("semantic_similarity") is not None:
             sim = item["semantic_similarity"]
-            meta += f" · sim {_heat(sim, 0.0, 1.0, f'{sim:.2f}')}"
+            meta += f" · {i18n.t(lang, 'sim')} {_heat(sim, 0.0, 1.0, f'{sim:.2f}')}"
         score = item["final_score"]
         lines.append(
             f"{index}. {anilist_link(item['title'], item.get('type'), item.get('media_id'))} "
-            f"— {meta} · score {_heat(score, 0.0, 1.0, f'{score:.2f}')}"
+            f"— {meta} · {i18n.t(lang, 'score')} {_heat(score, 0.0, 1.0, f'{score:.2f}')}"
         )
         why = annotations.get(index)
         if why:
@@ -701,48 +701,21 @@ def _render_search(
         if sources:
             # Highest user score first (strongest positive evidence), unrated last.
             sources.sort(key=lambda s: -(s.get("score") or 0))
-            proches = " · ".join(_format_source_compact(s, language) for s in sources[:6])
-            lines.append(f"   proche de : {proches}")
+            proches = " · ".join(_format_source_compact(s, settings) for s in sources[:6])
+            lines.append(f"   {i18n.t(lang, 'proche_de')} : {proches}")
         if index < len(items):
             lines.append("")
     return "\n".join(lines)
 
 
-def _fmt_len(episodes: Any, chapters: Any, volumes: Any) -> str:
+def _fmt_len(episodes: Any, chapters: Any, volumes: Any, lang: str = "fr") -> str:
     if episodes:
-        return f"{episodes} eps"
+        return f"{episodes} {i18n.t(lang, 'eps')}"
     if chapters:
-        return f"{chapters} chap"
+        return f"{chapters} {i18n.t(lang, 'chap')}"
     if volumes:
-        return f"{volumes} vol"
+        return f"{volumes} {i18n.t(lang, 'vol')}"
     return ""
-
-
-_STATUS_FR = {
-    "FINISHED": "terminé",
-    "RELEASING": "en cours",
-    "NOT_YET_RELEASED": "à paraître",
-    "HIATUS": "en pause",
-    "CANCELLED": "annulé",
-}
-
-_RELATION_FR = {
-    "SEQUEL": "suite",
-    "PREQUEL": "préquelle",
-    "SIDE_STORY": "histoire annexe",
-    "SPIN_OFF": "spin-off",
-    "ADAPTATION": "adaptation",
-    "SOURCE": "source",
-    "PARENT": "parent",
-    "SUMMARY": "résumé",
-    "ALTERNATIVE": "alternative",
-    "CHARACTER": "spin-off perso",
-    "OTHER": "lié",
-}
-
-
-def _status_label(status: Any) -> str:
-    return _STATUS_FR.get(status, status or "")
 
 
 def _stars(weight: Any) -> str:
@@ -786,20 +759,20 @@ def _source_title(row: dict[str, Any], language: str) -> str:
     return anilist_link(title, row.get("source_type"), row.get("source_id"))
 
 
-def _target_meta(row: dict[str, Any]) -> str:
+def _target_meta(row: dict[str, Any], lang: str = "fr") -> str:
     bits = [
         b
         for b in (
             row.get("target_format"),
-            _fmt_len(row.get("target_episodes"), row.get("target_chapters"), row.get("target_volumes")),
-            _status_label(row.get("target_status")),
+            _fmt_len(row.get("target_episodes"), row.get("target_chapters"), row.get("target_volumes"), lang),
+            i18n.status(lang, row.get("target_status") or ""),
         )
         if b
     ]
     meta = " · ".join(bits)
     score = row.get("target_score")
     if score is not None:
-        meta += f" · note {score}"
+        meta += " · " + i18n.t(lang, "note", score=score)
     return meta
 
 
@@ -815,48 +788,52 @@ def _group_by_source(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return groups
 
 
-def _format_franchise(rows: list[dict[str, Any]], language: str) -> str:
+def _format_franchise(rows: list[dict[str, Any]], settings: Settings) -> str:
+    lang = settings.language
+    title_lang = settings.title_language
     groups = _group_by_source(rows)
-    lines = [f"{len(rows)} suites (triées par affinité) :\n"]
+    lines = [i18n.t(lang, "franchise_header", n=len(rows)) + "\n"]
     for group in groups:
         source = group["source"]
         targets = group["targets"]
-        src_title = _source_title(source, language)
+        src_title = _source_title(source, title_lang)
         stars = _stars(source.get("parent_weight"))
         if len(targets) == 1:
             target = targets[0]
-            rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
-            lines.append(f"- {_target_title(target, language)} — {rel} · {_target_meta(target)} · {stars}")
-            lines.append(f"  ↳ depuis : {src_title}")
+            rel = i18n.relation(lang, target.get("relation_type") or "")
+            lines.append(f"- {_target_title(target, title_lang)} — {rel} · {_target_meta(target, lang)} · {stars}")
+            lines.append(f"  ↳ {i18n.t(lang, 'from_source')} : {src_title}")
         else:
-            lines.append(f"{src_title} — {stars} affinité")
+            lines.append(f"{src_title} — {stars} {i18n.t(lang, 'affinity')}")
             for target in targets:
-                rel = _RELATION_FR.get(target.get("relation_type"), target.get("relation_type") or "")
-                lines.append(f"  • {_target_title(target, language)} — {rel} · {_target_meta(target)}")
+                rel = i18n.relation(lang, target.get("relation_type") or "")
+                lines.append(f"  • {_target_title(target, title_lang)} — {rel} · {_target_meta(target, lang)}")
     return "\n".join(lines)
 
 
-def _format_cross_media(rows: list[dict[str, Any]], language: str, direction: str) -> str:
+def _format_cross_media(rows: list[dict[str, Any]], settings: Settings, direction: str) -> str:
+    lang = settings.language
+    title_lang = settings.title_language
     groups = _group_by_source(rows)
-    link = "suite de" if direction == "ANIME_TO_PRINT" else "adapté de"
+    link = i18n.t(lang, "sequel_of") if direction == "ANIME_TO_PRINT" else i18n.t(lang, "adapted_from")
     if direction == "ANIME_TO_PRINT":
-        header = f"{len(rows)} mangas/LN à lire (triés par affinité) :"
+        header = i18n.t(lang, "anime_to_print_header", n=len(rows))
     else:
-        header = f"{len(rows)} adaptations anime (triées par affinité) :"
+        header = i18n.t(lang, "print_to_anime_header", n=len(rows))
     lines = [header + "\n"]
     for group in groups:
         source = group["source"]
         targets = group["targets"]
-        src_title = _source_title(source, language)
+        src_title = _source_title(source, title_lang)
         stars = _stars(source.get("parent_weight"))
         if len(targets) == 1:
             target = targets[0]
-            lines.append(f"- {_target_title(target, language)} — {_target_meta(target)} · {stars}")
+            lines.append(f"- {_target_title(target, title_lang)} — {_target_meta(target, lang)} · {stars}")
             lines.append(f"  ↳ {link} : {src_title}")
         else:
-            lines.append(f"{src_title} — {stars} affinité · {len(targets)} titres")
+            lines.append(f"{src_title} — {stars} {i18n.t(lang, 'affinity')} · {len(targets)} {i18n.t(lang, 'titles')}")
             for target in targets:
-                lines.append(f"  • {_target_title(target, language)} — {_target_meta(target)}")
+                lines.append(f"  • {_target_title(target, title_lang)} — {_target_meta(target, lang)}")
     return "\n".join(lines)
 
 
@@ -871,8 +848,8 @@ def _franchise(args: dict[str, Any], db: Any, settings: Settings) -> str:
         limit=_clamp_limit(args, 25, 50),
     )
     if not rows:
-        return "Aucune suite trouvée avec ces filtres."
-    return _format_franchise(rows, settings.title_language)
+        return i18n.t(settings.language, "no_sequels")
+    return _format_franchise(rows, settings)
 
 
 def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
@@ -889,8 +866,8 @@ def _adaptations(args: dict[str, Any], db: Any, settings: Settings) -> str:
         limit=_clamp_limit(args, 15, 40),
     )
     if not rows:
-        return "Aucun résultat avec ces filtres."
-    return _format_cross_media(rows, settings.title_language, direction)
+        return i18n.t(settings.language, "no_results")
+    return _format_cross_media(rows, settings, direction)
 
 
 def execute_tool(
@@ -1001,12 +978,7 @@ def run_agent(
     # titles (the is_adult exclusion empties the pool, so the vector search latches
     # onto dark manga instead). Refuse early with an actionable hint.
     if _wants_adult(query) and not settings.allow_adult:
-        return (
-            "Contenu adulte désactivé : ta demande mentionne du contenu hentai/adulte, "
-            "mais `allow_adult` est sur `false`.\n"
-            "Active-le avec `ANILIST_ALLOW_ADULT=true` (ou `allow_adult = true` dans "
-            "config.toml) puis relance ta demande."
-        )
+        return i18n.t(settings.language, "adult_disabled")
 
     client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=180.0)
     system_prompt = build_system_prompt(load_profile(settings))
@@ -1070,11 +1042,11 @@ def run_agent(
             result = execute_tool(name, args, settings, query)
             if name == "search_new_recommendations" and isinstance(result, list):
                 if not result:
-                    content = "Aucun résultat avec ces filtres."
+                    content = i18n.t(settings.language, "no_results")
                 else:
                     has_query = any(item.get("semantic_similarity") is not None for item in result)
                     annotations = _annotate_search(result, client, settings)
-                    content = _render_search(result, annotations, has_query, settings.title_language)
+                    content = _render_search(result, annotations, has_query, settings)
             else:
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             outputs.append(content)

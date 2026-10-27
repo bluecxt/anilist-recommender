@@ -543,7 +543,7 @@ def explain(
         connection.close()
 
     # --- header
-    fmt = " · ".join(bit for bit in (chosen.get("format"), agent._length_label(chosen)) if bit)
+    fmt = " · ".join(bit for bit in (chosen.get("format"), agent._length_label(chosen, settings.language)) if bit)
     console.print(
         f"[bold]{agent.anilist_link(pick_title(chosen, settings.title_language), chosen.get('type'), media_id)}[/bold] — {fmt}"
     )
@@ -636,7 +636,7 @@ def explain(
         console.print("[dim]Aucun bord collaboratif — score issu uniquement de ta planning.[/dim]")
     if cand.get("negative_warnings"):
         warnings = " · ".join(
-            agent._format_source(s, settings.title_language, colorize=True) for s in cand["negative_warnings"][:4]
+            agent._format_source(s, settings, colorize=True) for s in cand["negative_warnings"][:4]
         )
         console.print(f"[red]⚠ recommandé aussi par : {warnings}[/red]")
     console.print()
@@ -654,7 +654,7 @@ def explain(
     if relations:
         console.print("[bold]Contexte relationnel[/bold]")
         for row in relations:
-            kind = agent._RELATION_FR.get(row["relation_type"], row["relation_type"])
+            kind = agent.i18n.relation(settings.language, row["relation_type"])
             if int(row["source_id"]) == media_id:
                 label = f"→ {kind} : {name(int(row['target_id']))}"
             else:
@@ -698,6 +698,7 @@ def config() -> None:
     table.add_row("max_graph_sources", str(settings.max_graph_sources))
     table.add_row("request_interval", str(settings.request_interval))
     table.add_row("title_language", settings.title_language)
+    table.add_row("language", settings.language)
     table.add_row("allow_adult", str(settings.allow_adult))
     console.print(table)
 

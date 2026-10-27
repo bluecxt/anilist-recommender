@@ -33,6 +33,9 @@ EMBEDDING_DIMS: dict[str, int] = {
 # AniList exposes three title variants; any may be null so we fall back.
 TITLE_LANGUAGES = ("english", "romaji", "native")
 
+# Output prose language (labels + LLM 'why' blurbs). Titles use title_language.
+OUTPUT_LANGUAGES = ("fr", "en")
+
 
 def pick_title(media: dict, language: str = "english") -> str:
     """Best-effort title in the requested language, with fallbacks.
@@ -75,6 +78,9 @@ class Settings:
 
     # Preferred title language for display: "english" | "romaji" | "native".
     title_language: str
+
+    # Output prose language (labels + LLM 'why' blurbs): "fr" | "en".
+    language: str
 
     # Include adult (hentai) titles in search results. Off by default.
     allow_adult: bool
@@ -179,6 +185,10 @@ def get_settings() -> Settings:
 
     allow_adult = _pick_bool(file_cfg, "allow_adult", "ANILIST_ALLOW_ADULT", False)
 
+    language = str(_pick(file_cfg, "language", "ANILIST_LANGUAGE", "fr")).lower()
+    if language not in OUTPUT_LANGUAGES:
+        language = "fr"
+
     return Settings(
         data_dir=data_dir,
         db_path=data_dir / "anilist_local.db",
@@ -193,6 +203,7 @@ def get_settings() -> Settings:
         max_graph_sources=_pick_int(file_cfg, "max_graph_sources", "ANILIST_MAX_GRAPH_SOURCES", 60),
         request_interval=_pick_float(file_cfg, "request_interval", "ANILIST_REQUEST_INTERVAL", 0.85),
         title_language=title_language,
+        language=language,
         allow_adult=allow_adult,
         config_path=config_path,
     )
