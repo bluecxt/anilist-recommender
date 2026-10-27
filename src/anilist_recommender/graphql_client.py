@@ -42,6 +42,7 @@ MEDIA_FIELDS = """
   countryOfOrigin
   averageScore
   popularity
+  isAdult
   genres
   studios(isMain: true) { nodes { name } }
   tags { name rank isMediaSpoiler }
@@ -77,6 +78,7 @@ RECOMMENDATION_MEDIA_FIELDS = """
   volumes
   countryOfOrigin
   averageScore
+  isAdult
   genres
   tags { name rank isMediaSpoiler }
   description(asHtml: false)
@@ -440,6 +442,7 @@ def normalize_media(raw: dict[str, Any]) -> dict[str, Any]:
         "country_of_origin": raw.get("countryOfOrigin"),
         "average_score": raw.get("averageScore"),
         "popularity": raw.get("popularity"),
+        "is_adult": bool(raw.get("isAdult")),
         "genres": list(raw.get("genres") or []),
         "tags": [name for _, name in tags],
         "studios": studios,

@@ -251,7 +251,7 @@ def _require_synced(settings: Settings) -> None:
             connection.close()
     except Exception:
         return  # let the actual command surface any real DB error
-    if "title_native" not in columns:
+    if "title_native" not in columns or "is_adult" not in columns:
         console.print("[red]Database schema is outdated — run `anilist-rec sync` again.[/red]")
         raise typer.Exit(1)
 

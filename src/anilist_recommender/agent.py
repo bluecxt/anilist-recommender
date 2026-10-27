@@ -194,7 +194,10 @@ def build_system_prompt(profile: dict[str, Any]) -> str:
         "(greeting, 'how do you work').\n"
         "2. Call the tool ONCE with the best parameters. Keep filters minimal: leave min_user_score "
         "and only_finished_target unset unless the user asks for 'mes préférés' or 'un LN/manga terminé'.\n"
-        "3. Answer meta questions in FRENCH. Do not add preamble, disclaimer or 'j'espère que ça "
+        "3. For search_new_recommendations, ALWAYS leave include_movies_or_ovas=false unless the "
+        "user EXPLICITLY asks for films, OVAs, spéciaux or movies. Setting it to true without being "
+        "asked floods the list with OVAs/shorts.\n"
+        "4. Answer meta questions in FRENCH. Do not add preamble, disclaimer or 'j'espère que ça "
         "vous plaira' filler.\n\n"
         f"<taste_profile>\n{profile_json}\n</taste_profile>"
     )
@@ -681,12 +684,46 @@ def execute_tool(name: str, args: dict[str, Any], settings: Settings) -> str | l
         connection.close()
 
 
+def _extract_json_object(text: str) -> str | None:
+    """Return the first balanced ``{…}`` JSON object found in free text.
+
+    Recovers tool calls the model wrapped in prose (``Voici l'appel : {…}.``)
+    where a plain ``json.loads`` of the whole content fails.
+    """
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1]
+        start = text.find("{", start + 1)
+    return None
+
+
 def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
     """Recover a tool call emitted as a JSON string instead of native `tool_calls`.
 
     Some Ollama models dump the call into `message.content` as e.g.
-    `{"name": "...", "parameters": {...}}` (or `"arguments"`). Parse it so the
-    request still executes instead of printing the raw JSON.
+    `{"name": "...", "parameters": {...}}` (or `"arguments"`), possibly wrapped
+    in prose or code fences. Parse it so the request still executes instead of
+    printing the raw JSON.
     """
     text = (content or "").strip()
     if not text:
@@ -694,10 +731,17 @@ def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
+    data: Any
     try:
         data = json.loads(text)
     except ValueError:
-        return None, {}
+        extracted = _extract_json_object(text)
+        if extracted is None:
+            return None, {}
+        try:
+            data = json.loads(extracted)
+        except ValueError:
+            return None, {}
     if isinstance(data, dict) and data.get("name"):
         params = data.get("parameters") or data.get("arguments") or {}
         if isinstance(params, str):

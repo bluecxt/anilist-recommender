@@ -32,6 +32,7 @@ CREATE TABLE media (
   country_of_origin TEXT,
   average_score INTEGER,
   popularity INTEGER,
+  is_adult INTEGER DEFAULT 0,
   genres TEXT,
   tags TEXT,
   studios TEXT,
@@ -154,8 +155,8 @@ def reset_schema(db: sqlite3.Connection, embedding_dim: int) -> None:
 
 _MEDIA_COLUMNS = (
     "id, type, title_romaji, title_english, title_native, format, status, episodes, duration, "
-    "chapters, volumes, country_of_origin, average_score, popularity, genres, tags, studios, "
-    "description, prequel_id, parent_id, is_root"
+    "chapters, volumes, country_of_origin, average_score, popularity, is_adult, genres, tags, "
+    "studios, description, prequel_id, parent_id, is_root"
 )
 
 
@@ -175,6 +176,7 @@ def _media_values(media: dict[str, Any]) -> tuple[Any, ...]:
         media.get("country_of_origin"),
         media.get("average_score"),
         media.get("popularity"),
+        int(media.get("is_adult") or 0),
         json.dumps(media.get("genres") or []),
         json.dumps(media.get("tags") or []),
         json.dumps(media.get("studios") or []),
@@ -204,7 +206,7 @@ def persist(
     for media in media_rows.values():
         db.execute(
             f"INSERT OR REPLACE INTO media ({_MEDIA_COLUMNS}) "
-            f"VALUES ({','.join('?' * 21)})",
+            f"VALUES ({','.join('?' * 22)})",
             _media_values(media),
         )
 
@@ -400,6 +402,9 @@ def search_new_recommendations(
     base, length_expr = _CATEGORY_MAP[category]
     conditions = list(base)
     params: list[Any] = []
+
+    # Adult (hentai) titles never belong in a "recommend me something" list.
+    conditions.append("(m.is_adult IS NULL OR m.is_adult = 0)")
 
     if category == "ANIME" and not include_movies_or_ovas:
         conditions.append("m.format IN ('TV','TV_SHORT','ONA')")
