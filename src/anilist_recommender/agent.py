@@ -346,6 +346,11 @@ def _annotate_search(
             continue
         index = int(match.group(1))
         sentence = match.group(2).strip()
+        # Strip a leading "Title | " echo if the model repeated the input title.
+        if 1 <= index <= len(items) and " | " in sentence:
+            head, _, rest = sentence.partition(" | ")
+            if head.strip() == items[index - 1]["title"]:
+                sentence = rest.strip()
         if 1 <= index <= len(items) and sentence:
             annotations[index] = sentence
     return annotations
@@ -359,7 +364,7 @@ def _render_search(
         meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
         if has_query and item.get("semantic_similarity") is not None:
             meta += f" · sim {item['semantic_similarity']:.2f}"
-        lines.append(f"{index}. {item['title']} — {meta} · affinité {item['graph_score']:.2f}")
+        lines.append(f"{index}. {item['title']} — {meta} · score {item['final_score']:.2f}")
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")

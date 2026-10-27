@@ -87,7 +87,11 @@ def query_similarities(
     if not candidate_ids:
         return {}
     query_vector = embed_query(query_text, settings)
-    k = max(1, len(candidate_ids))
+    # `k` must cover the WHOLE index, not just the filtered candidate set: the
+    # top-N nearest neighbours of the query can be other media, and then the
+    # filtered candidates would wrongly fall back to 0.0 similarity.
+    total = db.execute("SELECT COUNT(*) AS n FROM vec_media").fetchone()["n"]
+    k = max(1, int(total))
     sql = (
         "SELECT media_id, distance FROM vec_media "
         f"WHERE embedding MATCH ? AND k = {k}"
