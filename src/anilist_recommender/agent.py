@@ -36,6 +36,31 @@ def anilist_link(title: str, media_type: str | None, media_id: Any) -> str:
         return title
     return f"[link={_anilist_url(media_type, media_id)}]{escape(title)}[/link]"
 
+
+def _heat_color(value: float) -> str:
+    """Hex color on a red → yellow → green ramp, for a value in [0, 1]."""
+    value = max(0.0, min(1.0, value))
+    hue = value * 120.0  # 0° = red, 60° = yellow, 120° = green
+    sat, light = 0.8, 0.45
+    chroma = (1.0 - abs(2.0 * light - 1.0)) * sat
+    x = chroma * (1.0 - abs((hue / 60.0) % 2.0 - 1.0))
+    m = light - chroma / 2.0
+    r, g, b = (chroma, x, 0.0) if hue < 60.0 else (x, chroma, 0.0)
+    return f"#{int(round((r + m) * 255)):02x}{int(round((g + m) * 255)):02x}{int(round((b + m) * 255)):02x}"
+
+
+def _heat(value: float, lo: float, hi: float, text: str) -> str:
+    """Wrap `text` in a red→yellow→green color for `value` within [lo, hi].
+
+    Negative → red, neutral → yellow, positive → green (lo < 0 < hi makes the
+    midpoint land on yellow). Rich strips these codes when output is piped, so
+    files/logs stay clean.
+    """
+    if hi <= lo:
+        return text
+    color = _heat_color((value - lo) / (hi - lo))
+    return f"[{color}]{text}[/{color}]"
+
 TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -233,11 +258,12 @@ _LIST_STATUS_FR = {
 }
 
 
-def _format_source(source: dict[str, Any], language: str) -> str:
+def _format_source(source: dict[str, Any], language: str, colorize: bool = False) -> str:
     """Phrase one recommending source in natural French, in the configured title
     language (the DB stores the title in all three languages, never pre-formatted).
 
     Legacy guard: a plain string (pre-structured DB) is passed through as-is.
+    With ``colorize=True`` the 0-100 score is heat-colored (red→green).
     """
     if isinstance(source, str):
         return source
@@ -249,7 +275,10 @@ def _format_source(source: dict[str, Any], language: str) -> str:
     elif status == "PAUSED":
         suffix = ", en pause"
     elif score and score > 0:
-        suffix = f", noté {int(score)}/100"
+        score_text = str(int(score))
+        if colorize:
+            score_text = _heat(float(score), 0.0, 100.0, score_text)
+        suffix = f", noté {score_text}/100"
     else:
         suffix = ""
     return f"« {title} »{suffix}"
@@ -537,19 +566,21 @@ def _render_search(
     for index, item in enumerate(items, start=1):
         meta = " · ".join(b for b in (item.get("format"), item["length"]) if b)
         if has_query and item.get("semantic_similarity") is not None:
-            meta += f" · sim {item['semantic_similarity']:.2f}"
+            sim = item["semantic_similarity"]
+            meta += f" · sim {_heat(sim, 0.0, 1.0, f'{sim:.2f}')}"
+        score = item["final_score"]
         lines.append(
             f"{index}. {anilist_link(item['title'], item.get('type'), item.get('media_id'))} "
-            f"— {meta} · score {item['final_score']:.2f}"
+            f"— {meta} · score {_heat(score, 0.0, 1.0, f'{score:.2f}')}"
         )
         why = annotations.get(index)
         if why:
             lines.append(f"   → {why}")
         elif item.get("positive_sources"):
-            sources = " · ".join(_format_source(s, language) for s in item["positive_sources"][:2])
+            sources = " · ".join(_format_source(s, language, colorize=True) for s in item["positive_sources"][:2])
             lines.append(f"   → proche de : {sources}")
         if item.get("negative_warnings"):
-            warnings = " · ".join(_format_source(s, language) for s in item["negative_warnings"][:2])
+            warnings = " · ".join(_format_source(s, language, colorize=True) for s in item["negative_warnings"][:2])
             lines.append(f"   [red]⚠ recommandé aussi par {warnings}[/red]")
         if index < len(items):
             lines.append("")

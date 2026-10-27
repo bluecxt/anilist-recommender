@@ -275,7 +275,7 @@ def _candidate_table(title: str, candidates: list[dict], language: str = "englis
             agent.anilist_link(pick_title(candidate, language), candidate["type"], candidate["media_id"]),
             candidate["type"],
             candidate["format"] or "—",
-            f"{candidate['graph_score']:.2f}",
+            agent._heat(candidate["graph_score"] or 0.0, 0.0, 50.0, f"{candidate['graph_score']:.2f}"),
             "IN_PLANNING" if candidate["planning_bonus"] else "DISCOVERY",
         )
     return table
@@ -546,9 +546,11 @@ def explain(
     console.print(
         f"[bold]{agent.anilist_link(pick_title(chosen, settings.title_language), chosen.get('type'), media_id)}[/bold] — {fmt}"
     )
+    avg = chosen.get("average_score")
+    avg_text = agent._heat(float(avg), 0.0, 100.0, str(avg)) if avg else "?"
     console.print(
         f"type [cyan]{chosen['type']}[/cyan] · statut [cyan]{chosen.get('status') or '?'}[/cyan] · "
-        f"note communautaire [cyan]{chosen.get('average_score') or '?'}[/cyan] · "
+        f"note communautaire {avg_text} · "
         f"popularité [cyan]{chosen.get('popularity') or '?'}[/cyan]"
     )
     if chosen.get("genres"):
@@ -592,6 +594,8 @@ def explain(
         root_id = root_of[sid]
         root_label = "—" if root_id == sid else name(root_id)
         factor = damped.get(sid, 0.0) / raw if raw else 0.0
+        weight = float(row["affinity_weight"] or 0.0)
+        damped_val = damped.get(sid, 0.0)
         table.add_row(
             agent.anilist_link(
                 pick_title(
@@ -606,11 +610,13 @@ def explain(
                 row.get("type"),
                 sid,
             ),
-            f"{row['affinity_weight']:+.2f}",
+            agent._heat(weight, -2.0, 2.5, f"{weight:+.2f}"),
             str(row["rating"]),
-            f"{raw:+.3f}",
+            agent._heat(raw, -30.0, 30.0, f"{raw:+.3f}"),
             root_label,
-            f"{damped.get(sid, 0.0):+.3f} {'×' + f'{factor:.2f}' if factor < 0.999 else ''}",
+            agent._heat(damped_val, -30.0, 30.0, f"{damped_val:+.3f}") + (
+                f" {'×' + f'{factor:.2f}' if factor < 0.999 else ''}"
+            ),
         )
     console.print(table)
     raw_total = sum(value for _, value in raw_contribs)
@@ -629,7 +635,7 @@ def explain(
         console.print("[dim]Aucun bord collaboratif — score issu uniquement de ta planning.[/dim]")
     if cand.get("negative_warnings"):
         warnings = " · ".join(
-            agent._format_source(s, settings.title_language) for s in cand["negative_warnings"][:4]
+            agent._format_source(s, settings.title_language, colorize=True) for s in cand["negative_warnings"][:4]
         )
         console.print(f"[red]⚠ recommandé aussi par : {warnings}[/red]")
     console.print()
@@ -637,9 +643,10 @@ def explain(
     # --- quality factor (P2 #10)
     average = chosen.get("average_score") or 0
     quality = min(1.0, float(average) / 75.0) if average else 0.5
-    console.print(f"Facteur qualité (bayésien) : [cyan]{quality:.2f}[/cyan] = min(1, note/75)" + (
-        " (note inconnue → neutre 0.5)" if not average else ""
-    ))
+    console.print(
+        f"Facteur qualité (bayésien) : {agent._heat(quality, 0.0, 1.0, f'{quality:.2f}')} "
+        "= min(1, note/75)" + (" (note inconnue → neutre 0.5)" if not average else "")
+    )
     console.print()
 
     # --- relations context
