@@ -63,6 +63,25 @@ RELATION_NODE_FIELDS = """
   title { romaji english }
 """
 
+# Reduced `Media` fragment for `mediaRecommendation` targets. Drops fields never
+# used on candidates (studios/duration/popularity) so two sources can be batched
+# per request via GraphQL aliases without exceeding the complexity limit.
+RECOMMENDATION_MEDIA_FIELDS = """
+  id
+  type
+  title { romaji english }
+  format
+  status
+  episodes
+  chapters
+  volumes
+  countryOfOrigin
+  averageScore
+  genres
+  tags { name rank isMediaSpoiler }
+  description(asHtml: false)
+"""
+
 USER_PROFILE_QUERY = """
 query ($userName: String) {
   User(name: $userName) {
@@ -290,6 +309,30 @@ class AniListClient:
         media = data.get("Media") or {}
         recommendations = media.get("recommendations") or {}
         return recommendations.get("nodes") or []
+
+    @staticmethod
+    def _build_recommendations_batch_query(ids: list[int], per_page: int) -> str:
+        parts = [
+            f"a{i}: Media(id: {mid}) {{ id recommendations(sort: RATING_DESC, perPage: {per_page}) "
+            f"{{ nodes {{ rating mediaRecommendation {{ {RECOMMENDATION_MEDIA_FIELDS} }} }} }} }}"
+            for i, mid in enumerate(ids)
+        ]
+        return "query { " + " ".join(parts) + " }"
+
+    async def fetch_recommendations_batch(
+        self, ids: list[int], per_page: int = 15
+    ) -> list[tuple[int, int, dict[str, Any]]]:
+        """Recommendations for several media in one aliased query → (source_id, rating, target)."""
+        data = await self._post(self._build_recommendations_batch_query(ids, per_page), {})
+        results: list[tuple[int, int, dict[str, Any]]] = []
+        for index, media_id in enumerate(ids):
+            media = data.get(f"a{index}") or {}
+            for node in (media.get("recommendations") or {}).get("nodes") or []:
+                rating = node.get("rating")
+                target = node.get("mediaRecommendation")
+                if rating is not None and target is not None:
+                    results.append((media_id, int(rating), target))
+        return results
 
     async def fetch_relations_chunk(self, ids: list[int]) -> list[tuple[int, str, dict[str, Any]]]:
         data = await self._post(BULK_RELATIONS_QUERY, {"ids": ids, "perPage": len(ids)})

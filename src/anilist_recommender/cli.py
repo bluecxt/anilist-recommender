@@ -69,19 +69,26 @@ async def _sync(username: str, settings: Settings) -> None:
             BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
         ) as progress:
             task = progress.add_task("Collaborative graph", total=len(ordered_sources))
-            for source in ordered_sources:
+            batch_size = 2
+            for start in range(0, len(ordered_sources), batch_size):
+                chunk = ordered_sources[start : start + batch_size]
+                ids = [source.media_id for source in chunk]
                 try:
-                    nodes = await client.fetch_recommendations(source.media_id, per_page=15)
+                    rec_edges.extend(await client.fetch_recommendations_batch(ids, per_page=15))
                 except gc.AniListError as exc:
-                    logger.warning("skipping #%s: %s", source.media_id, exc)
-                    progress.advance(task)
-                    continue
-                for node in nodes:
-                    rating = node.get("rating")
-                    target = node.get("mediaRecommendation")
-                    if rating is not None and target is not None:
-                        rec_edges.append((source.media_id, int(rating), target))
-                progress.advance(task)
+                    logger.warning("batch recommendations failed (%s) — retrying one-by-one", exc)
+                    for source in chunk:
+                        try:
+                            nodes = await client.fetch_recommendations(source.media_id, per_page=15)
+                        except gc.AniListError as exc2:
+                            logger.warning("skipping #%s: %s", source.media_id, exc2)
+                            continue
+                        for node in nodes:
+                            rating = node.get("rating")
+                            target = node.get("mediaRecommendation")
+                            if rating is not None and target is not None:
+                                rec_edges.append((source.media_id, int(rating), target))
+                progress.advance(task, len(chunk))
 
         # --- 2. franchise relations for engaged works (sequels/prequels/adaptations)
         engaged_ids = [w.media_id for w in works if w.status != "PLANNING"]
