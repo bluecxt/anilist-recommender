@@ -244,6 +244,7 @@ def rank_candidates(
                 "country": row["country_of_origin"],
                 "genres": row["genres"],
                 "tags": row["tags"],
+                "description": row["description"],
                 "length": _length_label(row),
                 "episodes": row["episodes"],
                 "chapters": row["chapters"],
@@ -311,16 +312,17 @@ def _annotate_search(
         genres = ", ".join(item.get("genres") or [])[:120]
         tags = ", ".join((item.get("tags") or [])[:6])
         sources = "; ".join(item.get("positive_sources") or [])[:160] or "—"
+        synopsis = (item.get("description") or "").strip()[:140]
         bullets.append(
             f"{index}. {item['title']} | {item.get('format')} {item['length']} | "
-            f"genres: {genres} | tags: {tags} | proche de: {sources}"
+            f"genres: {genres} | tags: {tags} | proche de: {sources} | synopsis: {synopsis}"
         )
 
     prompt = (
         "Écris pour chaque recommandation UNE phrase française courte (≤ 20 mots) expliquant "
-        "POURQUOI elle plaira à l'utilisateur. Utilise UNIQUEMENT les données fournies "
-        "(genres, tags, œuvres proches). N'invente rien, ne répète pas le titre, ne cite pas "
-        "de chiffres.\n\n"
+        "POURQUOI elle plaira à l'utilisateur. Appuie-toi sur le synopsis fourni (et sur les "
+        "genres/tags/œuvres proches). N'invente aucun élément d'intrigue absent du synopsis, "
+        "ne répète pas le titre, ne cite pas de chiffres.\n\n"
         f"Genres préférés : {top_genres}\nTags préférés : {top_tags}\n\n"
         + "\n".join(bullets)
         + "\n\nRéponds exactement une ligne par numéro, sans texte supplémentaire."
