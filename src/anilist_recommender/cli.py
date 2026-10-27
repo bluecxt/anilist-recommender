@@ -247,11 +247,16 @@ def _require_synced(settings: Settings) -> None:
         connection = db_module.connect(settings.db_path)
         try:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(media)")}
+            version = int(db_module.read_meta(connection).get("schema_version", "0") or 0)
         finally:
             connection.close()
     except Exception:
         return  # let the actual command surface any real DB error
-    if "title_native" not in columns or "is_adult" not in columns:
+    if (
+        "title_native" not in columns
+        or "is_adult" not in columns
+        or version < db_module.SCHEMA_VERSION
+    ):
         console.print("[red]Database schema is outdated — run `anilist-rec sync` again.[/red]")
         raise typer.Exit(1)
 
@@ -623,7 +628,10 @@ def explain(
     elif not sources:
         console.print("[dim]Aucun bord collaboratif — score issu uniquement de ta planning.[/dim]")
     if cand.get("negative_warnings"):
-        console.print(f"[red]⚠ {', '.join(cand['negative_warnings'][:4])}[/red]")
+        warnings = " · ".join(
+            agent._format_source(s, settings.title_language) for s in cand["negative_warnings"][:4]
+        )
+        console.print(f"[red]⚠ recommandé aussi par : {warnings}[/red]")
     console.print()
 
     # --- quality factor (P2 #10)

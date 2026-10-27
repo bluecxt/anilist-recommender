@@ -27,10 +27,6 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def display_title(media: dict[str, Any]) -> str:
-    return media.get("title_romaji") or media.get("title_english") or f"#{media.get('id')}"
-
-
 def compute_progress_ratio(
     media: dict[str, Any], status: str, progress: int, progress_volumes: int = 0
 ) -> float:
@@ -178,8 +174,26 @@ class Candidate:
     graph_score: float = 0.0
     planning_bonus: float = 0.0
     source_pool: str = "DISCOVERY"
-    positive_sources: list[str] = field(default_factory=list)
-    negative_warnings: list[str] = field(default_factory=list)
+    positive_sources: list[dict[str, Any]] = field(default_factory=list)
+    negative_warnings: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _source_evidence(work: Work, rating: int) -> dict[str, Any]:
+    """Language-neutral evidence about a recommending source, stored in the DB.
+
+    Keeps the title in all three languages + the user's own 0-100 score + list
+    status, so the display layer can phrase it in French with the *configured*
+    ``title_language`` — the pre-formatted-string approach froze titles in romaji.
+    """
+    return {
+        "title_romaji": work.media.get("title_romaji"),
+        "title_english": work.media.get("title_english"),
+        "title_native": work.media.get("title_native"),
+        "score": work.score,
+        "status": work.status,
+        "rating": rating,
+        "weight": work.weight,
+    }
 
 
 def chain_root(
@@ -293,20 +307,20 @@ def compute_graph_scores(
         damped = amortize_contributions(contributions, root_of)
 
         total = 0.0
-        positive: list[tuple[float, str]] = []
-        negative: list[str] = []
+        positive: list[tuple[float, dict[str, Any]]] = []
+        negative: list[dict[str, Any]] = []
         for source_id, contribution in damped:
             work = works_by_id[source_id]
             rating = source_ratings[source_id]
             total += contribution
-            label = display_title(work.media)
+            source = _source_evidence(work, rating)
             if work.weight > 0.5:
-                positive.append((contribution, f"{label} ({work.weight:+.1f}, rating: {rating})"))
+                positive.append((contribution, source))
             elif work.weight < 0.0:
-                negative.append(f"{label} ({work.status}, {work.weight:+.1f}, rating: {rating})")
+                negative.append(source)
         cand.graph_score = total
         positive.sort(key=lambda pair: -pair[0])
-        cand.positive_sources = [text for _, text in positive]
+        cand.positive_sources = [evidence for _, evidence in positive]
         cand.negative_warnings = negative
 
     for media_id, cand in candidates.items():

@@ -226,6 +226,34 @@ def _length_label(media: dict[str, Any]) -> str:
     return f"{chapters} {unit}" if chapters else "? length"
 
 
+_LIST_STATUS_FR = {
+    "DROPPED": "abandonné",
+    "PAUSED": "en pause",
+}
+
+
+def _format_source(source: dict[str, Any], language: str) -> str:
+    """Phrase one recommending source in natural French, in the configured title
+    language (the DB stores the title in all three languages, never pre-formatted).
+
+    Legacy guard: a plain string (pre-structured DB) is passed through as-is.
+    """
+    if isinstance(source, str):
+        return source
+    title = pick_title(source, language)
+    status = source.get("status")
+    score = source.get("score")
+    if status == "DROPPED":
+        suffix = ", abandonné"
+    elif status == "PAUSED":
+        suffix = ", en pause"
+    elif score and score > 0:
+        suffix = f", noté {int(score)}/100"
+    else:
+        suffix = ""
+    return f"« {title} »{suffix}"
+
+
 def rank_candidates(
     rows: list[dict[str, Any]],
     similarities: dict[int, float],
@@ -452,7 +480,9 @@ def _annotate_search(
     for index, item in enumerate(items[:10], start=1):
         genres = ", ".join(item.get("genres") or [])[:120]
         tags = ", ".join((item.get("tags") or [])[:6])
-        sources = "; ".join(item.get("positive_sources") or [])[:160] or "—"
+        sources = " · ".join(
+            _format_source(s, settings.title_language) for s in (item.get("positive_sources") or [])
+        )[:160] or "—"
         synopsis = (item.get("description") or "").strip()[:140]
         bullets.append(
             f"{index}. {item['title']} | {item.get('format')} {item['length']} | "
@@ -500,7 +530,7 @@ def _annotate_search(
 
 
 def _render_search(
-    items: list[dict[str, Any]], annotations: dict[int, str], has_query: bool
+    items: list[dict[str, Any]], annotations: dict[int, str], has_query: bool, language: str = "english"
 ) -> str:
     lines = [f"{len(items)} recommandations (triées par affinité) :\n"]
     for index, item in enumerate(items, start=1):
@@ -515,9 +545,11 @@ def _render_search(
         if why:
             lines.append(f"   → {why}")
         elif item.get("positive_sources"):
-            lines.append(f"   → proche de : {', '.join(item['positive_sources'][:2])}")
+            sources = " · ".join(_format_source(s, language) for s in item["positive_sources"][:2])
+            lines.append(f"   → proche de : {sources}")
         if item.get("negative_warnings"):
-            lines.append(f"   ⚠ {', '.join(item['negative_warnings'][:2])}")
+            warnings = " · ".join(_format_source(s, language) for s in item["negative_warnings"][:2])
+            lines.append(f"   ⚠ recommandé aussi par {warnings}")
     return "\n".join(lines)
 
 
@@ -865,7 +897,7 @@ def run_agent(
                 else:
                     has_query = any(item.get("semantic_similarity") is not None for item in result)
                     annotations = _annotate_search(result, client, settings)
-                    content = _render_search(result, annotations, has_query)
+                    content = _render_search(result, annotations, has_query, settings.title_language)
             else:
                 content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             outputs.append(content)

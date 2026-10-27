@@ -16,6 +16,10 @@ import sqlite_vec
 
 from .scoring import Candidate, Work
 
+# Bump when the stored format changes in a way a stale DB can't satisfy (the
+# CLI's `_require_synced` guard reads this from the `meta` table).
+SCHEMA_VERSION = 3
+
 CREATE_MEDIA = """
 CREATE TABLE media (
   id INTEGER PRIMARY KEY,
@@ -279,6 +283,7 @@ def persist(
     db.execute("INSERT INTO meta (key, value) VALUES ('username', ?)", (username,))
     db.execute("INSERT INTO meta (key, value) VALUES ('synced_at', ?)", (synced_at,))
     db.execute("INSERT INTO meta (key, value) VALUES ('embedding_model', ?)", (embedding_model,))
+    db.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     db.execute("INSERT INTO meta (key, value) VALUES ('num_works', ?)", (str(len(works)),))
     db.execute("INSERT INTO meta (key, value) VALUES ('num_candidates', ?)", (str(len(candidates)),))
     db.execute("INSERT INTO meta (key, value) VALUES ('num_relations', ?)", (str(len(relation_rows)),))
