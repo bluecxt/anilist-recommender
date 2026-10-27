@@ -9,19 +9,38 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import sqlite3
+import warnings
 from typing import Any
 
-from sentence_transformers import SentenceTransformer
+# Set BEFORE importing sentence_transformers/transformers/tqdm so their notices
+# and progress bars are silenced from the very first cold load.
+os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+from sentence_transformers import SentenceTransformer  # noqa: E402
 
 from .config import Settings
 
 _model: SentenceTransformer | None = None
 
 
+def _quiet_hf_logs() -> None:
+    """Silence huggingface_hub's 'unauthenticated requests' notice — it fires on
+    every cold model load (a metadata ping to the HF Hub) even though the model
+    is cached locally. Noise, not an error: the anonymous download still works,
+    and a free HF_TOKEN only raises rate limits."""
+    for name in ("huggingface_hub", "transformers", "sentence_transformers", "filelock"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+    warnings.filterwarnings("ignore", message=r".*unauthenticated requests.*")
+
+
 def get_model(settings: Settings) -> SentenceTransformer:
     global _model
     if _model is None:
+        _quiet_hf_logs()
         _model = SentenceTransformer(settings.embedding_model, device="cpu")
     return _model
 
