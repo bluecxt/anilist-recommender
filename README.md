@@ -87,7 +87,7 @@ environment.systemPackages = [
 > ℹ️ Le paquet repose sur `python313Packages` — `sqlite-vec` et
 > `sentence-transformers` (avec son `torch` **CPU**) y sont déjà empaquetés, d'où
 > le passage de Python 3.12 à **3.13**. Au premier `sync`, le modèle d'embeddings
-> (~120 Mo) est téléchargé depuis Hugging Face dans `~/.cache/huggingface`
+> (~470 Mo) est téléchargé depuis Hugging Face dans `~/.cache/huggingface`
 > (réseau au *runtime*, pas au build).
 
 **Alternative dev** : `nix develop && uv sync && uv run anilist-rec ...`
