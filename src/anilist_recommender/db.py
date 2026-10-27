@@ -107,6 +107,17 @@ CREATE TABLE meta (
 )
 """
 
+# Never dropped by reset_schema: the cache survives syncs so unchanged
+# candidates keep their vectors (see P1 #9 — embedding cache + atomic sync).
+CREATE_EMBEDDING_CACHE = """
+CREATE TABLE IF NOT EXISTS embedding_cache (
+  media_id INTEGER PRIMARY KEY,
+  model TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  vector TEXT NOT NULL
+)
+"""
+
 
 def connect(path: Any) -> sqlite3.Connection:
     db_path = str(path)
@@ -118,6 +129,7 @@ def connect(path: Any) -> sqlite3.Connection:
     db.enable_load_extension(False)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
+    db.execute("PRAGMA busy_timeout=5000")
     return db
 
 
@@ -136,6 +148,7 @@ def reset_schema(db: sqlite3.Connection, embedding_dim: int) -> None:
         "media_id INTEGER PRIMARY KEY, "
         f"embedding FLOAT[{embedding_dim}] distance_metric=cosine)"
     )
+    db.execute(CREATE_EMBEDDING_CACHE)
     db.execute("PRAGMA foreign_keys=ON")
 
 
@@ -267,7 +280,47 @@ def persist(
     db.execute("INSERT INTO meta (key, value) VALUES ('num_works', ?)", (str(len(works)),))
     db.execute("INSERT INTO meta (key, value) VALUES ('num_candidates', ?)", (str(len(candidates)),))
     db.execute("INSERT INTO meta (key, value) VALUES ('num_relations', ?)", (str(len(relation_rows)),))
-    db.commit()
+    # No commit here: sync wraps the whole rebuild in ONE transaction so a
+    # failure mid-sync rolls everything back (atomic rebuild, P1 #9).
+
+
+# --- Embedding cache (P1 #9) -----------------------------------------------------------
+
+
+def load_embedding_cache(db: sqlite3.Connection, model: str) -> dict[int, tuple[str, list[float]]]:
+    """media_id → (content_hash, vector) for the given embedding model."""
+    rows = db.execute(
+        "SELECT media_id, content_hash, vector FROM embedding_cache WHERE model = ?", (model,)
+    ).fetchall()
+    cache: dict[int, tuple[str, list[float]]] = {}
+    for row in rows:
+        try:
+            cache[int(row["media_id"])] = (str(row["content_hash"]), json.loads(row["vector"]))
+        except (TypeError, ValueError):
+            continue  # corrupt row → treated as a cache miss
+    return cache
+
+
+def save_embedding_cache(
+    db: sqlite3.Connection, model: str, entries: list[tuple[int, str, list[float]]]
+) -> None:
+    db.executemany(
+        "INSERT OR REPLACE INTO embedding_cache (media_id, model, content_hash, vector) "
+        "VALUES (?,?,?,?)",
+        [(media_id, model, content_hash, json.dumps(vector)) for media_id, content_hash, vector in entries],
+    )
+
+
+def prune_embedding_cache(db: sqlite3.Connection, model: str, keep_ids: set[int]) -> None:
+    """Drop cache rows whose media is no longer a candidate."""
+    if not keep_ids:
+        db.execute("DELETE FROM embedding_cache WHERE model = ?", (model,))
+        return
+    placeholders = ",".join("?" * len(keep_ids))
+    db.execute(
+        f"DELETE FROM embedding_cache WHERE model = ? AND media_id NOT IN ({placeholders})",
+        [model, *sorted(keep_ids)],
+    )
 
 
 _CANDIDATE_SELECT = """
@@ -278,6 +331,7 @@ SELECT
   c.source_pool,
   c.positive_sources,
   c.negative_warnings,
+  (SELECT ul.updated_at FROM user_list ul WHERE ul.media_id = c.media_id) AS list_updated_at,
   m.type,
   m.title_romaji,
   m.title_english,
@@ -565,3 +619,68 @@ def top_by_graph_score(
     sql += " ORDER BY c.graph_score DESC LIMIT ?"
     params.append(limit)
     return [_row_to_candidate(r) for r in db.execute(sql, params).fetchall()]
+
+
+# --- explain command (P2 #11) ----------------------------------------------------------
+
+
+def find_media_by_title(
+    db: sqlite3.Connection, text: str, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Fuzzy title lookup across romaji/english/native, most popular first."""
+    needle = text.strip()
+    if not needle:
+        return []
+    like = f"%{needle}%"
+    rows = db.execute(
+        "SELECT id, type, title_romaji, title_english, title_native, format, status, "
+        "average_score, popularity, episodes, chapters, volumes, genres, tags, description, "
+        "prequel_id, parent_id, is_root "
+        "FROM media "
+        "WHERE title_romaji LIKE ? OR title_english LIKE ? OR title_native LIKE ? "
+        "ORDER BY popularity DESC LIMIT ?",
+        (like, like, like, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_candidate(db: sqlite3.Connection, media_id: int) -> dict[str, Any] | None:
+    rows = db.execute(_CANDIDATE_SELECT + " WHERE c.media_id = ?", (media_id,)).fetchall()
+    return _row_to_candidate(rows[0]) if rows else None
+
+
+def recommendation_sources(db: sqlite3.Connection, target_id: int) -> list[dict[str, Any]]:
+    """Raw collaborative edges pointing at a candidate, with source context."""
+    rows = db.execute(
+        "SELECT r.source_media_id, r.rating, ul.affinity_weight, ul.status AS list_status, "
+        "ul.score AS user_score, m.title_romaji, m.title_english, m.title_native, "
+        "m.type, m.format, m.average_score "
+        "FROM media_recommendations r "
+        "JOIN user_list ul ON ul.media_id = r.source_media_id "
+        "JOIN media m ON m.id = r.source_media_id "
+        "WHERE r.target_media_id = ? "
+        "ORDER BY ul.affinity_weight DESC",
+        (target_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def relation_context(db: sqlite3.Connection, media_id: int) -> list[dict[str, Any]]:
+    """Every relation row where the media appears as source or target."""
+    rows = db.execute(
+        "SELECT source_id, target_id, relation_type, target_title_romaji, target_title_english, "
+        "target_title_native, target_format, target_type, target_status "
+        "FROM media_relations WHERE source_id = ? OR target_id = ? "
+        "ORDER BY relation_type",
+        (media_id, media_id),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def franchise_triples(db: sqlite3.Connection) -> list[tuple[int, str, int]]:
+    """(source, type, target) triples for the prequel/parent maps, from the DB."""
+    rows = db.execute(
+        "SELECT source_id, relation_type, target_id FROM media_relations "
+        "WHERE relation_type IN ('SEQUEL','PREQUEL','PARENT')"
+    ).fetchall()
+    return [(int(row["source_id"]), str(row["relation_type"]), int(row["target_id"])) for row in rows]

@@ -7,6 +7,7 @@ as a module-level singleton so repeated `ask`/`chat` turns don't reload it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from typing import Any
@@ -68,13 +69,22 @@ def embed_query(text: str, settings: Settings) -> list[float]:
     return vector.tolist()
 
 
+def content_hash(settings: Settings, text: str) -> str:
+    """Cache key for one candidate: model + prefix are part of the hash, so a
+    change of embedding model or prefix automatically invalidates every entry."""
+    return hashlib.sha256((settings.embedding_doc_prefix + text).encode("utf-8")).hexdigest()
+
+
 def store_vectors(db: sqlite3.Connection, vectors: list[tuple[int, list[float]]]) -> None:
-    """Insert (media_id, embedding) rows into the vec_media virtual table."""
+    """Insert (media_id, embedding) rows into the vec_media virtual table.
+
+    No commit: `sync` runs inside one transaction so the whole rebuild is atomic
+    (P1 #9). The caller commits.
+    """
     db.executemany(
         "INSERT INTO vec_media (media_id, embedding) VALUES (?, ?)",
         [(media_id, json.dumps(vector)) for media_id, vector in vectors],
     )
-    db.commit()
 
 
 def query_similarities(

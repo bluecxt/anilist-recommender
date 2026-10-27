@@ -1,10 +1,12 @@
-"""Typer + rich CLI (V2): sync, profile, sequels, ask, chat."""
+"""Typer + rich CLI (V2): sync, profile, sequels, explain, ask, chat."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import math
+import time
 from datetime import datetime, timezone
 
 import typer
@@ -119,8 +121,10 @@ async def _sync(username: str, settings: Settings) -> None:
     finally:
         await client.close()
 
-    candidates = scoring.compute_graph_scores(works, rec_edges)
+    # Relation maps first: the graph scoring needs the franchise roots to
+    # amortize the echo chamber (P0 #3).
     prequel_of, parent_of, relation_rows = scoring.build_relation_maps(relation_edges)
+    candidates = scoring.compute_graph_scores(works, rec_edges, prequel_of, parent_of)
 
     before = len(candidates)
     candidates = scoring.apply_prequel_gatekeeping(works, candidates, prequel_of, parent_of)
@@ -142,28 +146,64 @@ async def _sync(username: str, settings: Settings) -> None:
 
     connection = db_module.connect(settings.db_path)
     try:
-        db_module.reset_schema(connection, settings.embedding_dim)
-        synced_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        db_module.persist(
-            connection, works, candidates, edges, relation_rows,
-            username, synced_at, settings.embedding_model,
-        )
+        # ONE transaction around the whole rebuild: a crash mid-sync (network
+        # errors already passed, but embeddings can fail) rolls back to the
+        # previous intact DB instead of leaving a half-built one (P1 #9).
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            db_module.reset_schema(connection, settings.embedding_dim)
+            synced_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            db_module.persist(
+                connection, works, candidates, edges, relation_rows,
+                username, synced_at, settings.embedding_model,
+            )
 
-        if candidates:
-            console.print("[cyan]Loading embedding model on CPU (never touches the GPU)…[/cyan]")
-            texts = [embeddings.build_embedding_text(c.media) for c in candidates]
-            ids = [c.media_id for c in candidates]
-            with Progress(
-                SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
-            ) as progress:
-                task = progress.add_task("Embedding candidates", total=len(candidates))
-                for i in range(0, len(candidates), 32):
-                    chunk_texts = texts[i : i + 32]
-                    chunk_ids = ids[i : i + 32]
-                    vectors = embeddings.embed_texts(chunk_texts, settings)
-                    embeddings.store_vectors(connection, list(zip(chunk_ids, vectors)))
-                    progress.advance(task, len(chunk_texts))
+            if candidates:
+                console.print("[cyan]Embedding candidates on CPU (never touches the GPU)…[/cyan]")
+                ids = [c.media_id for c in candidates]
+                texts = [embeddings.build_embedding_text(c.media) for c in candidates]
+                hashes = [embeddings.content_hash(settings, text) for text in texts]
+
+                cache = db_module.load_embedding_cache(connection, settings.embedding_model)
+                reused: list[tuple[int, list[float]]] = []
+                to_embed: list[int] = []
+                for index, media_id in enumerate(ids):
+                    entry = cache.get(media_id)
+                    if entry is not None and entry[0] == hashes[index]:
+                        reused.append((media_id, entry[1]))
+                    else:
+                        to_embed.append(index)
+
+                new_entries: list[tuple[int, str, list[float]]] = []
+                if reused:
+                    embeddings.store_vectors(connection, reused)
+                if to_embed:
+                    with Progress(
+                        SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                        BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
+                    ) as progress:
+                        task = progress.add_task("Embedding candidates", total=len(to_embed))
+                        for start in range(0, len(to_embed), 32):
+                            chunk = to_embed[start : start + 32]
+                            chunk_ids = [ids[i] for i in chunk]
+                            vectors = embeddings.embed_texts([texts[i] for i in chunk], settings)
+                            pairs = list(zip(chunk_ids, vectors))
+                            embeddings.store_vectors(connection, pairs)
+                            new_entries.extend(
+                                (media_id, hashes[index], vector)
+                                for (media_id, vector), index in zip(pairs, chunk)
+                            )
+                            progress.advance(task, len(chunk))
+                db_module.save_embedding_cache(connection, settings.embedding_model, new_entries)
+                db_module.prune_embedding_cache(connection, settings.embedding_model, set(ids))
+                if reused:
+                    console.print(
+                        f"[dim]Embedding cache: {len(reused)} réutilisés, {len(to_embed)} recalculés.[/dim]"
+                    )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
     finally:
         connection.close()
 
@@ -380,6 +420,219 @@ def sequels(
             str(row["target_score"]) if row["target_score"] is not None else "—",
         )
     console.print(table)
+
+
+# --------------------------------------------------------------------------- explain
+
+
+def _age_label(timestamp: int | None) -> str:
+    if not timestamp:
+        return "—"
+    days = (time.time() - float(timestamp)) / 86_400
+    if days < 1:
+        return f"{days * 24:.1f} h"
+    if days < 365:
+        return f"{days:.0f} j"
+    return f"{days / 365:.1f} ans"
+
+
+@app.command()
+def explain(
+    title: str = typer.Argument(..., help="Titre (ou fragment) du candidat à expliquer."),
+) -> None:
+    """Deterministic 'why is this recommended' breakdown — no LLM involved."""
+    settings = get_settings()
+    _require_synced(settings)
+
+    connection = db_module.connect(settings.db_path)
+    try:
+        matches = db_module.find_media_by_title(connection, title, limit=10)
+        if not matches:
+            console.print(f"[red]Aucun média trouvé pour « {title} ».[/red]")
+            raise typer.Exit(1)
+        needle = title.strip().lower()
+        chosen = next(
+            (
+                media
+                for media in matches
+                if any(
+                    (media.get(key) or "").strip().lower() == needle
+                    for key in ("title_romaji", "title_english", "title_native")
+                )
+            ),
+            None,
+        )
+        if chosen is None:
+            if len(matches) > 1:
+                console.print("[yellow]Plusieurs correspondances — précise le titre :[/yellow]")
+                for media in matches:
+                    console.print(
+                        f"  • {pick_title(media, settings.title_language)} "
+                        f"({media['type']}, {media['format'] or '?'})"
+                    )
+                raise typer.Exit(1)
+            chosen = matches[0]
+        media_id = int(chosen["id"])
+
+        cand = db_module.get_candidate(connection, media_id)
+        if cand is None:
+            console.print(
+                f"[red]{pick_title(chosen, settings.title_language)} n'est pas un candidat "
+                f"(ni dans ta planning, ni découvert par le graphe collaboratif).[/red]"
+            )
+            raise typer.Exit(1)
+
+        sources = db_module.recommendation_sources(connection, media_id)
+        relations = db_module.relation_context(connection, media_id)
+        prequel_of, parent_of = scoring.derive_prequel_parent_maps(
+            db_module.franchise_triples(connection)
+        )
+        # Title lookup for every id we need to name (sources, roots, relations).
+        needed = {row["source_media_id"] for row in sources}
+        needed |= {scoring.chain_root(sid, prequel_of, parent_of) for sid in needed}
+        needed |= {row["source_id"] for row in relations}
+        needed |= {row["target_id"] for row in relations}
+        title_of: dict[int, dict] = {}
+        if needed:
+            placeholders = ",".join("?" * len(needed))
+            title_of = {
+                row["id"]: dict(row)
+                for row in connection.execute(
+                    f"SELECT id, title_romaji, title_english, title_native FROM media "
+                    f"WHERE id IN ({placeholders})",
+                    sorted(needed),
+                ).fetchall()
+            }
+
+        def name(media_id: int) -> str:
+            info = title_of.get(media_id)
+            return pick_title(info, settings.title_language) if info else f"#{media_id}"
+        # Recompute the amortized graph score from the stored edges (same math
+        # as sync — see scoring.compute_graph_scores).
+        raw_contribs: list[tuple[int, float]] = []
+        root_of: dict[int, int] = {}
+        for row in sources:
+            sid = int(row["source_media_id"])
+            weight = float(row["affinity_weight"] or 0.0)
+            rating = float(row["rating"] or 0.0)
+            raw_contribs.append((sid, weight * math.log1p(max(0.0, rating))))
+            root_of.setdefault(sid, scoring.chain_root(sid, prequel_of, parent_of))
+        damped = dict(scoring.amortize_contributions(raw_contribs, root_of))
+        own_total = sum(damped.values())
+        stored = float(cand["graph_score"] or 0.0)
+        transferred = stored - own_total
+    finally:
+        connection.close()
+
+    # --- header
+    fmt = " · ".join(bit for bit in (chosen.get("format"), agent._length_label(chosen)) if bit)
+    console.print(f"[bold]{pick_title(chosen, settings.title_language)}[/bold] — {fmt}")
+    console.print(
+        f"type [cyan]{chosen['type']}[/cyan] · statut [cyan]{chosen.get('status') or '?'}[/cyan] · "
+        f"note communautaire [cyan]{chosen.get('average_score') or '?'}[/cyan] · "
+        f"popularité [cyan]{chosen.get('popularity') or '?'}[/cyan]"
+    )
+    if chosen.get("genres"):
+        try:
+            genres = json.loads(chosen["genres"]) if isinstance(chosen["genres"], str) else chosen["genres"]
+            console.print(f"genres : {', '.join(genres or [])}")
+        except ValueError:
+            pass
+    console.print()
+
+    # --- planning status + stagnation (P2 #12)
+    if cand["planning_bonus"]:
+        updated = cand.get("list_updated_at")
+        if updated:
+            age_years = max(0.0, (time.time() - float(updated)) / 31_536_000)
+            decay = 0.5 ** (age_years / 2.0)
+            console.print(
+                f"Dans ta [bold]planning[/bold] depuis {_age_label(updated)} "
+                f"→ bonus de planning amorti ×[cyan]{decay:.2f}[/cyan] "
+                "(demi-vie 2 ans : une vieille intention compte moins)."
+            )
+        else:
+            console.print(
+                "Dans ta [bold]planning[/bold] (date inconnue) → bonus complet ×1.00."
+            )
+    else:
+        console.print("Source du candidat : [bold]découverte collaborative[/bold] (pas dans ta planning).")
+    console.print()
+
+    # --- graph score decomposition
+    table = Table(title=f"GraphScore = {stored:.3f} (amorti par franchise)")
+    table.add_column("Source", overflow="fold")
+    table.add_column("Poids", justify="right")
+    table.add_column("Note", justify="right")
+    table.add_column("Brut", justify="right")
+    table.add_column("Racine franchise", overflow="fold")
+    table.add_column("Amorti", justify="right")
+    ordered = sorted(raw_contribs, key=lambda pair: -pair[1])
+    for sid, raw in ordered[:12]:
+        row = next(r for r in sources if int(r["source_media_id"]) == sid)
+        root_id = root_of[sid]
+        root_label = "—" if root_id == sid else name(root_id)
+        factor = damped.get(sid, 0.0) / raw if raw else 0.0
+        table.add_row(
+            pick_title(
+                {
+                    "id": sid,
+                    "title_romaji": row["title_romaji"],
+                    "title_english": row["title_english"],
+                    "title_native": row["title_native"],
+                },
+                settings.title_language,
+            ),
+            f"{row['affinity_weight']:+.2f}",
+            str(row["rating"]),
+            f"{raw:+.3f}",
+            root_label,
+            f"{damped.get(sid, 0.0):+.3f} {'×' + f'{factor:.2f}' if factor < 0.999 else ''}",
+        )
+    console.print(table)
+    raw_total = sum(raw_contribs)
+    if abs(transferred) > 1e-6:
+        if abs(stored - raw_total) <= 1e-6:
+            console.print(
+                f"[yellow]Écart de {transferred:+.3f} : le score stocké date d'un sync "
+                f"antérieur à l'amortissement par franchise — relance `sync` pour l'aligner.[/yellow]"
+            )
+        else:
+            console.print(
+                f"[yellow]Dont {transferred:+.3f} transféré depuis des suites retirées par le "
+                f"Prequel Gatekeeping (leur préquel n'est pas terminé).[/yellow]"
+            )
+    elif not sources:
+        console.print("[dim]Aucun bord collaboratif — score issu uniquement de ta planning.[/dim]")
+    if cand.get("negative_warnings"):
+        console.print(f"[red]⚠ {', '.join(cand['negative_warnings'][:4])}[/red]")
+    console.print()
+
+    # --- quality factor (P2 #10)
+    average = chosen.get("average_score") or 0
+    quality = min(1.0, float(average) / 75.0) if average else 0.5
+    console.print(f"Facteur qualité (bayésien) : [cyan]{quality:.2f}[/cyan] = min(1, note/75)" + (
+        " (note inconnue → neutre 0.5)" if not average else ""
+    ))
+    console.print()
+
+    # --- relations context
+    if relations:
+        console.print("[bold]Contexte relationnel[/bold]")
+        for row in relations:
+            kind = agent._RELATION_FR.get(row["relation_type"], row["relation_type"])
+            if int(row["source_id"]) == media_id:
+                label = f"→ {kind} : {name(int(row['target_id']))}"
+            else:
+                label = f"← {kind} de : {name(int(row['source_id']))}"
+            console.print(f"  {label}")
+    else:
+        console.print("[dim]Aucune relation franchise connue (racine autonome).[/dim]")
+    console.print()
+    console.print(
+        "[dim]Note : le score final affiché par `ask` dépend du lot filtré au moment de la "
+        "requête (normalisation par rang + similarité sémantique + bonus de planning).[/dim]"
+    )
 
 
 # --------------------------------------------------------------------------- config

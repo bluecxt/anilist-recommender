@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -214,12 +215,25 @@ def rank_candidates(
     has_query: bool,
     language: str = "english",
 ) -> list[dict[str, Any]]:
+    """Final blended score per candidate.
+
+    Components (P2 #10 / #12):
+    * graph_norm — rank-percentile of the amortized GraphScore (see scoring.py);
+    * similarity — cosine vs the semantic query (only when the user asked one);
+    * planning — bonus for titles already in the planning list, **decayed with
+      a 2-year half-life** when the entry has been sleeping there untouched
+      (``updated_at`` from AniList) — a 3-year-old plan is a weak signal;
+    * quality — Bayesian-ish quality factor ``min(1, averageScore/75)``, neutral
+      0.5 when the community score is unknown (unreleased/obscure).
+
+    Weights: 0.45/0.30/0.10/0.15 with a semantic query, 0.75/0.15/0.10 without.
+    """
     if not rows:
         return []
     scores = [row["graph_score"] or 0.0 for row in rows]
     # Rank-percentile normalization: Min-Max collapses a power-law GraphScore
     # distribution (2-3 mega-hits dwarf 95% of candidates near 0). Rank spreads the
-    # filtered set uniformly over [0, 1] so the 0.55 graph weight stays meaningful.
+    # filtered set uniformly over [0, 1] so the graph weight stays meaningful.
     n = len(scores)
     order = sorted(range(n), key=lambda i: scores[i])
     rank_norm = [0.0] * n
@@ -229,13 +243,25 @@ def rank_candidates(
     else:
         rank_norm[0] = 1.0 if scores[0] > 0 else 0.0
 
+    now = time.time()
     ranked: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         graph_norm = rank_norm[index]
         similarity = similarities.get(row["media_id"], 0.0)
         planning = row["planning_bonus"] or 0.0
-        final = graph_norm * 0.55 + similarity * 0.35 + planning * 0.10 if has_query else (
-            graph_norm * 0.85 + planning * 0.15
+        decay = 1.0
+        if planning > 0:
+            updated = row.get("list_updated_at")
+            if updated:
+                age_years = max(0.0, (now - float(updated)) / 31_536_000)
+                decay = 0.5 ** (age_years / 2.0)  # half-life: 2 years on the shelf
+                planning = planning * decay
+        average = row.get("average_score") or 0
+        quality = min(1.0, float(average) / 75.0) if average else 0.5
+        final = (
+            graph_norm * 0.45 + similarity * 0.30 + planning * 0.10 + quality * 0.15
+            if has_query
+            else graph_norm * 0.75 + quality * 0.15 + planning * 0.10
         )
         ranked.append(
             {
@@ -257,6 +283,8 @@ def rank_candidates(
                 "status": "IN_PLANNING" if planning > 0 else "DISCOVERY",
                 "graph_score": round(row["graph_score"] or 0.0, 3),
                 "semantic_similarity": round(similarity, 3) if has_query else None,
+                "quality_factor": round(quality, 3),
+                "planning_decay": round(decay, 3) if planning > 0 else None,
                 "final_score": round(final, 4),
                 "positive_sources": row["positive_sources"],
                 "negative_warnings": row["negative_warnings"],
@@ -297,6 +325,78 @@ def _search_new(args: dict[str, Any], db: Any, settings: Settings) -> list[dict[
     return rank_candidates(rows, similarities, has_query, settings.title_language)
 
 
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _parse_annotations_json(text: str, count: int) -> dict[int, str]:
+    """Parse a strict-JSON annotation answer: ``{"1": "phrase", ...}`` or a list
+    of ``{"index"/"id", "reason"/"why"/"text"}`` objects. Empty dict when the
+    model ignored the JSON contract — the caller falls back to line parsing."""
+    try:
+        parsed: Any = json.loads(_strip_fences(text))
+    except ValueError:
+        return {}
+
+    def _sentence(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("reason", "why", "text", "phrase"):
+                if isinstance(value.get(key), str) and value[key].strip():
+                    return value[key].strip()
+        return ""
+
+    result: dict[int, str] = {}
+    if isinstance(parsed, dict):
+        for key, value in parsed.items():
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                continue
+            sentence = _sentence(value)
+            if 1 <= index <= count and sentence:
+                result[index] = sentence
+    elif isinstance(parsed, list):
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("index") or item.get("id") or item.get("num"))
+            except (TypeError, ValueError):
+                continue
+            sentence = _sentence(item)
+            if 1 <= index <= count and sentence:
+                result[index] = sentence
+    return result
+
+
+def _annotation_llm(client: Any, settings: Settings, prompt: str) -> str:
+    messages = [
+        {"role": "system", "content": "Tu es concis, factuel, tu réponds en français et en JSON strict."},
+        {"role": "user", "content": prompt},
+    ]
+    options = {"options": {"num_ctx": 8192, "temperature": 0.3}}
+    try:
+        # Structured outputs (json_object): Ollama ≥0.5 maps this to `format: json`.
+        response = client.chat.completions.create(
+            model=settings.ollama_model,
+            messages=messages,
+            response_format={"type": "json_object"},
+            extra_body=options,
+        )
+    except Exception:
+        # Older Ollama or a model that rejects the field — retry without it.
+        response = client.chat.completions.create(
+            model=settings.ollama_model, messages=messages, extra_body=options
+        )
+    return (response.choices[0].message.content or "").strip()
+
+
 def _annotate_search(
     items: list[dict[str, Any]], client: Any, settings: Settings
 ) -> dict[int, str]:
@@ -304,6 +404,8 @@ def _annotate_search(
 
     The LLM only phrases the reason; titles/formats stay rendered by the code, so a
     failure here never breaks the list — the caller falls back to `positive_sources`.
+    JSON mode is requested and validated (P1 #8b); line-by-line parsing is the
+    fallback when the model refuses the JSON contract.
     """
     if not items:
         return {}
@@ -323,43 +425,43 @@ def _annotate_search(
         )
 
     prompt = (
-        "Écris pour chaque recommandation UNE phrase française courte (≤ 20 mots) expliquant "
+        "Pour chaque recommandation, écris UNE phrase française courte (≤ 20 mots) expliquant "
         "POURQUOI elle plaira à l'utilisateur. Appuie-toi sur le synopsis fourni (et sur les "
         "genres/tags/œuvres proches). N'invente aucun élément d'intrigue absent du synopsis, "
         "ne répète pas le titre, ne cite pas de chiffres.\n\n"
         f"Genres préférés : {top_genres}\nTags préférés : {top_tags}\n\n"
         + "\n".join(bullets)
-        + "\n\nRéponds exactement une ligne par numéro, sans texte supplémentaire."
+        + '\n\nRéponds EXACTEMENT un objet JSON unique, sans texte autour : {"1": "phrase", '
+        '"2": "phrase", …} — une entrée par numéro, rien d’autre.'
     )
 
     try:
-        response = client.chat.completions.create(
-            model=settings.ollama_model,
-            messages=[
-                {"role": "system", "content": "Tu es concis, factuel, et tu réponds en français."},
-                {"role": "user", "content": prompt},
-            ],
-            extra_body={"options": {"num_ctx": 8192, "temperature": 0.3}},
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = _annotation_llm(client, settings, prompt)
     except Exception:
         return {}
 
-    annotations: dict[int, str] = {}
-    for line in text.splitlines():
-        match = re.match(r"^\s*(\d+)\s*[.):\-]\s*(.+)$", line.strip())
-        if not match:
-            continue
-        index = int(match.group(1))
-        sentence = match.group(2).strip()
-        # Strip a leading "Title | " echo if the model repeated the input title.
-        if 1 <= index <= len(items) and " | " in sentence:
+    annotations = _parse_annotations_json(text, len(items))
+    if not annotations:
+        # Fallback: line-by-line "1. phrase" when the model ignored JSON mode.
+        for line in text.splitlines():
+            match = re.match(r"^\s*(\d+)\s*[.):\-]\s*(.+)$", line.strip())
+            if not match:
+                continue
+            index = int(match.group(1))
+            sentence = match.group(2).strip()
+            if 1 <= index <= len(items) and sentence:
+                annotations[index] = sentence
+
+    # Strip a leading "Title | " echo if the model repeated the input title.
+    cleaned: dict[int, str] = {}
+    for index, sentence in annotations.items():
+        if " | " in sentence:
             head, _, rest = sentence.partition(" | ")
             if head.strip() == items[index - 1]["title"]:
                 sentence = rest.strip()
-        if 1 <= index <= len(items) and sentence:
-            annotations[index] = sentence
-    return annotations
+        if sentence:
+            cleaned[index] = sentence[:200]
+    return cleaned
 
 
 def _render_search(

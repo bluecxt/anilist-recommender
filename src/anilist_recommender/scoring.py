@@ -5,7 +5,11 @@ V2 additions:
   engagement threshold for ongoing works).
 * Structural relation maps (prequel / parent) from the `relations` graph.
 * Prequel Gatekeeping + Root Score Transfer: a discovered sequel whose prequel is
-  not completed is removed and its GraphScore is transferred onto the root.
+  not completed is removed and its GraphScore is transferred onto the root,
+  resolved **multi-hop** through the prequel/parent chain.
+* Franchise echo-chamber amortization: watching 6 seasons of a franchise is ONE
+  attachment, not six — positive contributions from the same franchise root are
+  damped by ``1/sqrt(rank)``.
 """
 
 from __future__ import annotations
@@ -178,13 +182,72 @@ class Candidate:
     negative_warnings: list[str] = field(default_factory=list)
 
 
+def chain_root(
+    media_id: int,
+    prequel_of: dict[int, int],
+    parent_of: dict[int, int],
+    limit: int = 40,
+) -> int:
+    """Follow prequel (then parent) links up to the franchise root, cycle-safe.
+
+    ``prequel_of[X] = Y`` means *Y is X's prequel*, so the walk goes to the
+    oldest entry. A ``parent`` link is only used when no prequel link exists.
+    """
+    current = media_id
+    seen: set[int] = set()
+    for _ in range(limit):
+        nxt = prequel_of.get(current) or parent_of.get(current)
+        if nxt is None or nxt in seen:
+            return current
+        seen.add(current)
+        current = nxt
+    return current
+
+
+def amortize_contributions(
+    contributions: list[tuple[int, float]], root_of: dict[int, int]
+) -> list[tuple[int, float]]:
+    """Damp positive contributions sharing a franchise root (echo-chamber guard).
+
+    Watching 6 seasons of a franchise is ONE attachment, not six independent
+    votes: inside each root group the positive contributions are damped by
+    ``1/sqrt(rank)`` (rank = descending contribution, source_id as tiebreaker
+    so the result is deterministic across call sites). Negative contributions
+    stay undamped — dropping several entries of a franchise is cumulative
+    evidence of aversion, not redundancy.
+    """
+    groups: dict[int, list[tuple[int, float]]] = defaultdict(list)
+    for source_id, contribution in contributions:
+        groups[root_of.get(source_id, source_id)].append((source_id, contribution))
+
+    damped: list[tuple[int, float]] = []
+    for items in groups.values():
+        positives = sorted(
+            (item for item in items if item[1] > 0.0), key=lambda item: (-item[1], item[0])
+        )
+        for rank, (source_id, contribution) in enumerate(positives, start=1):
+            damped.append((source_id, contribution / math.sqrt(rank)))
+        damped.extend(item for item in items if item[1] <= 0.0)
+    return damped
+
+
 def compute_graph_scores(
     works: list[Work],
     rec_edges: list[tuple[int, int, dict[str, Any]]],
+    prequel_of: dict[int, int] | None = None,
+    parent_of: dict[int, int] | None = None,
 ) -> list[Candidate]:
     works_by_id: dict[int, Work] = {w.media_id: w for w in works}
     status_by_id: dict[int, str] = {w.media_id: w.status for w in works}
     planning_ids: set[int] = {w.media_id for w in works if w.status == "PLANNING"}
+
+    # Franchise roots of the SOURCE works, used to amortize the echo chamber
+    # (P0 #3): several seasons of the same franchise must not vote six times.
+    prequel_of = prequel_of or {}
+    parent_of = parent_of or {}
+    root_of: dict[int, int] = {
+        w.media_id: chain_root(w.media_id, prequel_of, parent_of) for w in works
+    }
 
     edges: dict[int, dict[int, int]] = defaultdict(dict)
     discovered_media: dict[int, dict[str, Any]] = {}
@@ -213,14 +276,22 @@ def compute_graph_scores(
 
     for media_id, source_ratings in edges.items():
         cand = candidates[media_id]
-        total = 0.0
-        positive: list[tuple[float, str]] = []
-        negative: list[str] = []
+        contributions: list[tuple[int, float]] = []
         for source_id, rating in source_ratings.items():
             work = works_by_id.get(source_id)
             if work is None:
                 continue
-            contribution = work.weight * math.log1p(max(0.0, float(rating)))
+            contributions.append(
+                (source_id, work.weight * math.log1p(max(0.0, float(rating))))
+            )
+        damped = amortize_contributions(contributions, root_of)
+
+        total = 0.0
+        positive: list[tuple[float, str]] = []
+        negative: list[str] = []
+        for source_id, contribution in damped:
+            work = works_by_id[source_id]
+            rating = source_ratings[source_id]
             total += contribution
             label = display_title(work.media)
             if work.weight > 0.5:
@@ -246,6 +317,27 @@ def compute_graph_scores(
     return list(candidates.values())
 
 
+def derive_prequel_parent_maps(
+    relation_triples: list[tuple[int, str, int]],
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Derive ``prequel_of`` / ``parent_of`` from ``(source, type, target)`` triples.
+
+    AniList direction: ``X --SEQUEL--> Y`` = *Y is the sequel of X* (so X is Y's
+    prequel); ``X --PREQUEL--> Y`` = *Y is the prequel of X*; ``X --PARENT--> Y``
+    = *Y is X's franchise parent*.
+    """
+    prequel_of: dict[int, int] = {}
+    parent_of: dict[int, int] = {}
+    for source_id, relation_type, target_id in relation_triples:
+        if relation_type == "SEQUEL":
+            prequel_of[target_id] = source_id
+        elif relation_type == "PREQUEL":
+            prequel_of[source_id] = target_id
+        elif relation_type == "PARENT":
+            parent_of[source_id] = target_id
+    return prequel_of, parent_of
+
+
 def build_relation_maps(
     relation_edges: list[tuple[int, str, dict[str, Any]]],
 ) -> tuple[dict[int, int], dict[int, int], list[dict[str, Any]]]:
@@ -253,8 +345,7 @@ def build_relation_maps(
 
     ``relation_edges`` items are ``(source_id, relation_type, raw_target_node)``.
     """
-    prequel_of: dict[int, int] = {}
-    parent_of: dict[int, int] = {}
+    triples: list[tuple[int, str, int]] = []
     rows: list[dict[str, Any]] = []
 
     for source_id, relation_type, raw_target in relation_edges:
@@ -262,12 +353,7 @@ def build_relation_maps(
         target_id = target.get("id")
         if target_id is None:
             continue
-        if relation_type == "SEQUEL":
-            prequel_of[target_id] = source_id
-        elif relation_type == "PREQUEL":
-            prequel_of[source_id] = target_id
-        elif relation_type == "PARENT":
-            parent_of[source_id] = target_id
+        triples.append((source_id, relation_type, target_id))
         rows.append(
             {
                 "source_id": source_id,
@@ -286,6 +372,7 @@ def build_relation_maps(
                 "target_score": target.get("average_score"),
             }
         )
+    prequel_of, parent_of = derive_prequel_parent_maps(triples)
     return prequel_of, parent_of, rows
 
 
@@ -297,8 +384,12 @@ def apply_prequel_gatekeeping(
 ) -> list[Candidate]:
     """Remove discovered sequels whose prequel/parent is not completed.
 
-    Their GraphScore (+ sources/warnings) is transferred onto the root candidate
-    when the root is itself recommendable (e.g. a planned Season 1).
+    Their GraphScore (+ sources/warnings) is transferred onto the franchise
+    root, resolved **multi-hop** through the prequel/parent chain (a discovered
+    Season 4 can walk S4 → S3 → S2 → S1): the transfer lands on the DEEPEST
+    candidate ancestor (root-first) so the score never vanishes into a
+    non-candidate. Nodes already gated are skipped as targets — their score
+    moves up anyway, so nothing is double-counted.
     """
     completed = {w.media_id for w in works if w.status == "COMPLETED"}
     cand_by_id = {c.media_id: c for c in candidates}
@@ -307,20 +398,41 @@ def apply_prequel_gatekeeping(
     for candidate in candidates:
         if candidate.source_pool != "DISCOVERY":
             continue  # never gate my own planning list
-        transfer_to = None
+        links: dict[int, int] | None = None
         prequel = prequel_of.get(candidate.media_id)
         parent = parent_of.get(candidate.media_id)
         if prequel is not None and prequel not in completed:
-            transfer_to = prequel
+            links = prequel_of
         elif parent is not None and parent not in completed:
-            transfer_to = parent
-        if transfer_to is not None:
-            gated.add(candidate.media_id)
-            root = cand_by_id.get(transfer_to)
-            if root is not None:
-                root.graph_score += candidate.graph_score
-                root.positive_sources.extend(candidate.positive_sources)
-                root.negative_warnings.extend(candidate.negative_warnings)
+            links = parent_of
+        if links is None:
+            continue
+
+        # Walk the chain upward: [direct ancestor, …, root].
+        chain: list[int] = []
+        seen: set[int] = set()
+        current = links.get(candidate.media_id)
+        while current is not None and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            current = links.get(current)
+
+        target = None
+        for node in reversed(chain):  # root-first (deepest candidate ancestor)
+            if node not in gated and node in cand_by_id:
+                target = cand_by_id[node]
+                break
+        if target is None:
+            for node in chain:  # nearest candidate ancestor
+                if node not in gated and node in cand_by_id:
+                    target = cand_by_id[node]
+                    break
+
+        gated.add(candidate.media_id)
+        if target is not None:
+            target.graph_score += candidate.graph_score
+            target.positive_sources.extend(candidate.positive_sources)
+            target.negative_warnings.extend(candidate.negative_warnings)
 
     return [c for c in candidates if c.media_id not in gated]
 
