@@ -152,6 +152,10 @@ class AniListClient:
         self._min_interval = max(0.0, min_interval)
         self._last_request = 0.0
         self._lock = asyncio.Lock()
+        # Adaptive rate-limit state, refreshed from X-RateLimit-* headers.
+        self._rate_remaining: int | None = None
+        self._rate_limit: int | None = None
+        self._rate_reset: float | None = None
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -182,14 +186,45 @@ class AniListClient:
                 pass
         return default
 
+    def _update_rate_limit(self, headers: httpx.Headers) -> None:
+        """Track the sliding-window quota from X-RateLimit-* response headers."""
+        try:
+            remaining = headers.get("X-RateLimit-Remaining")
+            limit = headers.get("X-RateLimit-Limit")
+            reset = headers.get("X-RateLimit-Reset")
+            if remaining is not None:
+                self._rate_remaining = int(remaining)
+            if limit is not None:
+                self._rate_limit = int(limit)
+            if reset is not None:
+                self._rate_reset = float(reset)
+        except (TypeError, ValueError):
+            pass
+
+    async def _wait_for_quota(self) -> None:
+        """Sleep until the next rate-limit window before the quota runs out."""
+        if self._rate_remaining is not None and self._rate_remaining <= 2:
+            if self._rate_reset is not None:
+                wait = self._rate_reset - time.time() + 0.5
+                if wait > 0:
+                    logger.info(
+                        "rate limit near (%s left) — waiting %.1fs for reset",
+                        self._rate_remaining, wait,
+                    )
+                    await asyncio.sleep(wait)
+            self._rate_remaining = None
+            self._rate_reset = None
+
     async def _post(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         payload = {"query": query, "variables": variables}
         while True:
             await self._throttle()
+            await self._wait_for_quota()
             try:
                 response = await self._client.post(ANILIST_GRAPHQL_URL, json=payload)
             except httpx.TransportError as exc:
                 raise AniListError(f"network error while calling AniList: {exc}") from exc
+            self._update_rate_limit(response.headers)
 
             if response.status_code == 429:
                 delay = self._backoff_delay(response.headers, 5.0)

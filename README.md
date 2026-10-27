@@ -130,7 +130,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Modèle LLM (doit supporter le tool calling) |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
-| `ANILIST_REQUEST_INTERVAL` | `0.85` | Intervalle minimal entre deux requêtes GraphQL (s) |
+| `ANILIST_REQUEST_INTERVAL` | `0.85` | Intervalle minimal (anti-burst) entre deux requêtes (s) ; le quota est piloté par les headers `X-RateLimit-*` |
 
 ---
 
