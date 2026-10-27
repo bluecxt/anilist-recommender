@@ -590,7 +590,7 @@ def explain(
             f"{damped.get(sid, 0.0):+.3f} {'×' + f'{factor:.2f}' if factor < 0.999 else ''}",
         )
     console.print(table)
-    raw_total = sum(raw_contribs)
+    raw_total = sum(value for _, value in raw_contribs)
     if abs(transferred) > 1e-6:
         if abs(stored - raw_total) <= 1e-6:
             console.print(
