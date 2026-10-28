@@ -75,9 +75,9 @@ async def _sync(username: str, settings: Settings) -> None:
             BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
         ) as progress:
             task = progress.add_task("Collaborative graph", total=len(ordered_sources))
-            # Measured against AniList's 500 complexity cap: 8 sources × 15 recs
-            # stays well under (12 also passes, 8 keeps a safety margin).
-            batch_size = 8
+            # Measured against AniList's 500 complexity cap: 12 sources × 15 recs
+            # passes (the aliased Media(id:) query has no Page 50-cap, unlike relations).
+            batch_size = 12
             for start in range(0, len(ordered_sources), batch_size):
                 chunk = ordered_sources[start : start + batch_size]
                 ids = [source.media_id for source in chunk]
@@ -102,10 +102,11 @@ async def _sync(username: str, settings: Settings) -> None:
         engaged_ids = [w.media_id for w in works if w.status != "PLANNING"]
         console.print(f"[cyan]Fetching franchise relations for {len(engaged_ids)} works…[/cyan]")
         relation_edges: list[tuple[int, str, dict]] = []
-        # `Media.relations` has no perPage (AniList returns ALL edges), so the only
-        # complexity lever is chunk_size. 8 stays under the cap even for a chunk of
-        # heavily-connected works (worst case measured: top-8 ≈ 116 edges).
-        chunk_size = 8
+        # Two caps govern this chunk: AniList's `Page` silently truncates past 50
+        # media (no error → the one-by-one fallback can't catch it), and the 500
+        # complexity cap. Measured worst-case: 32 heavily-connected works = 311
+        # edges (OK), 50 works = 407 edges (OK). 32 keeps a safe margin under both.
+        chunk_size = 32
         with Progress(
             SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
             BarColumn(), TextColumn("{task.completed}/{task.total}"), TimeElapsedColumn(),
