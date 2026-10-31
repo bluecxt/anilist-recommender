@@ -145,7 +145,7 @@ cp config.example.toml config.toml
 ```toml
 # config.toml
 username = "ton-pseudo"            # fixe le profil AniList
-# data_dir = "data"
+# data_dir = "~/.cache/anilist-recommender"
 # ollama_model = "llama3.1:8b"
 # embedding_model = "intfloat/multilingual-e5-small"
 # max_graph_sources = 60
@@ -162,7 +162,7 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 | Variable | Défaut | Rôle |
 |---|---|---|
 | `ANILIST_USERNAME` | — | Nom d'utilisateur AniList |
-| `ANILIST_DATA_DIR` | `data/` | Dossier contenant `anilist_local.db` + `taste_profile.json` |
+| `ANILIST_DATA_DIR` | `~/.cache/anilist-recommender/` | Dossier contenant `anilist_local.db` + `taste_profile.json` (régénérable via `sync`) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Endpoint OpenAI-compatible d'Ollama |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Modèle LLM (doit supporter le tool calling) |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
@@ -227,7 +227,7 @@ anilist-recommender/
 ├── flake.nix
 ├── pyproject.toml
 ├── README.md
-├── data/                      # gitignoré : anilist_local.db + taste_profile.json
+├── data/                      # (optionnel) gitignoré ; par défaut la base vit dans ~/.cache/anilist-recommender/
 └── src/anilist_recommender/
     ├── config.py              # chemins, URL Ollama, modèle LLM, réglages
     ├── graphql_client.py      # extraction AniList + rate-limit

@@ -11,6 +11,11 @@ The config file is optional TOML, looked up in this order (first match wins):
     3. ``$XDG_CONFIG_HOME/anilist-recommender/config.toml`` (default ``~/.config``)
 
 See ``config.example.toml`` for the available keys.
+
+The data directory defaults to the XDG *cache* directory
+(``$XDG_CACHE_HOME/anilist-recommender``, default ``~/.cache``) because the
+local database, taste profile and embeddings are fully regenerable (a sync
+re-builds them from AniList).
 """
 
 from __future__ import annotations
@@ -105,6 +110,14 @@ def _resolve_embedding_dim(model: str) -> int:
     return EMBEDDING_DIMS.get(model, 384)
 
 
+def _default_data_dir() -> Path:
+    """XDG cache dir: the DB/profile/embeddings are regenerable, not precious."""
+    cache_base = Path(
+        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))
+    ).expanduser()
+    return cache_base / "anilist-recommender"
+
+
 def _find_config_file() -> Path | None:
     explicit = os.environ.get("ANILIST_CONFIG")
     if explicit:
@@ -169,7 +182,7 @@ def get_settings() -> Settings:
     config_path = _find_config_file()
     file_cfg = _load_config_file(config_path)
 
-    data_dir = Path(str(_pick(file_cfg, "data_dir", "ANILIST_DATA_DIR", "data"))).expanduser().resolve()
+    data_dir = Path(str(_pick(file_cfg, "data_dir", "ANILIST_DATA_DIR", _default_data_dir()))).expanduser().resolve()
     embedding_model = str(
         _pick(file_cfg, "embedding_model", "EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )

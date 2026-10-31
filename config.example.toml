@@ -17,8 +17,9 @@ username = "YOUR_ANILIST_USERNAME"
 # Output prose language (list labels + LLM "why" blurbs). Titles are separate.
 # language = "fr"              # fr | en
 
-# Where the local database + taste profile live.
-# data_dir = "data"
+# Where the local database + taste profile live. Defaults to the XDG cache
+# dir: ~/.cache/anilist-recommender (regenerable via `sync`).
+# data_dir = "~/.cache/anilist-recommender"
 
 # Local LLM (Ollama). 100% of the VRAM is reserved for this model.
 # ollama_base_url = "http://localhost:11434/v1"
