@@ -34,7 +34,7 @@ def _set_log_level(verbose: bool) -> None:
 
 app = typer.Typer(
     name="anilist-rec",
-    help="Local AniList anime/manga/LN/manhwa recommender (Ollama + sqlite-vec).",
+    help="Local AniList anime/manga/LN/manhwa recommender (llama-server + sqlite-vec).",
     no_args_is_help=True,
 )
 console = Console()
@@ -699,8 +699,8 @@ def config() -> None:
     table.add_column("Value")
     table.add_row("username", settings.username or "(unset)")
     table.add_row("data_dir", str(settings.data_dir))
-    table.add_row("ollama_model", settings.ollama_model)
-    table.add_row("ollama_base_url", settings.ollama_base_url)
+    table.add_row("llm_model", settings.llm_model)
+    table.add_row("llm_base_url", settings.llm_base_url)
     table.add_row("embedding_model", settings.embedding_model)
     table.add_row("max_graph_sources", str(settings.max_graph_sources))
     table.add_row("request_interval", str(settings.request_interval))

@@ -1,7 +1,7 @@
 """CPU-only embeddings + sqlite-vec cosine search.
 
 The embedding model is *always* instantiated with ``device="cpu"`` so it never
-touches the GPU — 100% of VRAM stays available for Ollama. The model is cached
+touches the GPU — 100% of VRAM stays available for the LLM. The model is cached
 as a module-level singleton so repeated `ask`/`chat` turns don't reload it.
 """
 

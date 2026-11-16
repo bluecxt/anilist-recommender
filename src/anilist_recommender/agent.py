@@ -1,6 +1,7 @@
 """Local LLM agent — V2 multi-tool (search / franchise / cross-media).
 
-Uses the official `openai` SDK pointed at Ollama. Three specialized tools are
+Uses the official `openai` SDK pointed at a local OpenAI-compatible LLM server
+(llama-server / llama.cpp, or Ollama). Three specialized tools are
 exposed; each returns pre-digested rows and the model is forbidden from inventing
 anything outside them. Output size is dynamic: detailed per-title analysis for
 <=5 results, a full Markdown table/list for larger audits.
@@ -564,15 +565,13 @@ def _jev_p_yes(
         {"role": "system", "content": _JEFF_SYSTEM},
         {"role": "user", "content": user_prompt},
     ]
-    options = {"options": {"num_ctx": 4096, "num_predict": 1}}
     response = client.chat.completions.create(
-        model=settings.ollama_model,
+        model=settings.llm_model,
         messages=messages,
         max_tokens=1,
         temperature=0.0,
         logprobs=True,
         top_logprobs=5,
-        extra_body=options,
     )
     choice = response.choices[0]
 
@@ -869,19 +868,18 @@ def _annotation_llm(client: Any, settings: Settings, prompt: str) -> str:
         {"role": "system", "content": i18n.t(settings.language, "annotation_system")},
         {"role": "user", "content": prompt},
     ]
-    options = {"options": {"num_ctx": 8192, "temperature": 0.3}}
     try:
-        # Structured outputs (json_object): Ollama ≥0.5 maps this to `format: json`.
+        # Structured outputs (json_object): llama.cpp and Ollama ≥0.5 force JSON.
         response = client.chat.completions.create(
-            model=settings.ollama_model,
+            model=settings.llm_model,
             messages=messages,
+            temperature=0.3,
             response_format={"type": "json_object"},
-            extra_body=options,
         )
     except Exception:
-        # Older Ollama or a model that rejects the field — retry without it.
+        # A server/model that rejects the field — retry without it.
         response = client.chat.completions.create(
-            model=settings.ollama_model, messages=messages, extra_body=options
+            model=settings.llm_model, messages=messages, temperature=0.3
         )
     return (response.choices[0].message.content or "").strip()
 
@@ -1217,7 +1215,7 @@ def _load_json_like(text: str) -> Any:
 def _parse_text_tool_call(content: str) -> tuple[str | None, dict[str, Any]]:
     """Recover a tool call emitted as a JSON string instead of native `tool_calls`.
 
-    Some Ollama models dump the call into `message.content` as e.g.
+    Some models dump the call into `message.content` as e.g.
     `{"name": "...", "parameters": {...}}` (or `"arguments"`), possibly wrapped
     in prose or code fences, and often with Python booleans (`False`). Parse it so
     the request still executes instead of printing the raw JSON.
@@ -1263,7 +1261,7 @@ def run_agent(
     if _wants_adult(query) and not settings.allow_adult:
         return i18n.t(settings.language, "adult_disabled")
 
-    client = OpenAI(base_url=settings.ollama_base_url, api_key="ollama", timeout=180.0)
+    client = OpenAI(base_url=settings.llm_base_url, api_key="no-key", timeout=180.0)
     system_prompt = build_system_prompt(load_profile(settings))
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
@@ -1273,10 +1271,10 @@ def run_agent(
 
     for _ in range(MAX_TOOL_ROUNDS):
         response = client.chat.completions.create(
-            model=settings.ollama_model,
+            model=settings.llm_model,
             messages=messages,
             tools=TOOLS,
-            extra_body={"options": {"num_ctx": 8192, "temperature": 0.2}},
+            temperature=0.2,
         )
         message = response.choices[0].message
         raw_content = message.content or ""

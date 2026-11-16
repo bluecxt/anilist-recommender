@@ -21,9 +21,10 @@ username = "YOUR_ANILIST_USERNAME"
 # dir: ~/.cache/anilist-recommender (regenerable via `sync`).
 # data_dir = "~/.cache/anilist-recommender"
 
-# Local LLM (Ollama). 100% of the VRAM is reserved for this model.
-# ollama_base_url = "http://localhost:11434/v1"
-# ollama_model = "llama3.1:8b"
+# Local LLM (OpenAI-compatible endpoint). Default is Ollama on :11434; point it
+# at llama-server / llama.cpp by setting both values (model = the server alias).
+# llm_base_url = "http://localhost:11434/v1"      # ou "http://127.0.0.1:8080/v1"
+# llm_model = "llama3.1:8b"                       # ex. "unsloth/Llama-3.1-8B-Instruct-GGUF:Q4_K_M"
 
 # Embeddings always run on CPU (device="cpu").
 # embedding_model = "intfloat/multilingual-e5-small"   # or "BAAI/bge-m3"

@@ -68,9 +68,10 @@ class Settings:
 
     username: str | None
 
-    # Ollama OpenAI-compatible endpoint. All VRAM is reserved for the LLM.
-    ollama_base_url: str
-    ollama_model: str
+    # OpenAI-compatible LLM endpoint (llama-server / llama.cpp, or Ollama).
+    # All VRAM is reserved for the LLM (embeddings always run on CPU).
+    llm_base_url: str
+    llm_model: str
 
     # Embeddings always run on CPU (device="cpu") — see embeddings.py.
     embedding_model: str
@@ -154,6 +155,14 @@ def _pick(file_cfg: dict, file_key: str, env_key: str, default):
     return default
 
 
+def _pick_legacy(file_cfg: dict, new_key: str, new_env: str, old_key: str, old_env: str, default):
+    """Prefer the new key/env; still accept the old Ollama-era ones for back-compat."""
+    value = _pick(file_cfg, new_key, new_env, None)
+    if value is not None:
+        return value
+    return _pick(file_cfg, old_key, old_env, default)
+
+
 def _pick_int(file_cfg: dict, file_key: str, env_key: str, default: int) -> int:
     value = _pick(file_cfg, file_key, env_key, default)
     try:
@@ -207,10 +216,22 @@ def get_settings() -> Settings:
         db_path=data_dir / "anilist_local.db",
         taste_profile_path=data_dir / "taste_profile.json",
         username=username,
-        ollama_base_url=str(
-            _pick(file_cfg, "ollama_base_url", "OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        llm_base_url=str(
+            _pick_legacy(
+                file_cfg,
+                "llm_base_url", "LLM_BASE_URL",
+                "ollama_base_url", "OLLAMA_BASE_URL",
+                "http://localhost:11434/v1",
+            )
         ),
-        ollama_model=str(_pick(file_cfg, "ollama_model", "OLLAMA_MODEL", "llama3.1:8b")),
+        llm_model=str(
+            _pick_legacy(
+                file_cfg,
+                "llm_model", "LLM_MODEL",
+                "ollama_model", "OLLAMA_MODEL",
+                "llama3.1:8b",
+            )
+        ),
         embedding_model=embedding_model,
         embedding_dim=_resolve_embedding_dim(embedding_model),
         max_graph_sources=_pick_int(file_cfg, "max_graph_sources", "ANILIST_MAX_GRAPH_SOURCES", 60),

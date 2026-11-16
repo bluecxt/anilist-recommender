@@ -34,9 +34,13 @@ uv sync
 ollama pull llama3.1:8b
 ```
 
+> Serveur OpenAI-compatible alternatif (llama-server / llama.cpp) : définir
+> `llm_base_url` et `llm_model` dans la config (voir plus bas), l'alias devant
+> correspondre au modèle chargé par le serveur.
+
 Le `shellHook` du flake exporte `LD_LIBRARY_PATH` (libstdc++ / libz) pour que les
 wheels *manylinux* de `torch` et `sqlite-vec` se chargent sur NixOS. Les
-**embeddings ne touchent jamais le GPU** : toute la VRAM reste à Ollama.
+**embeddings ne touchent jamais le GPU** : toute la VRAM reste au LLM (Ollama).
 
 ---
 
@@ -146,7 +150,8 @@ cp config.example.toml config.toml
 # config.toml
 username = "ton-pseudo"            # fixe le profil AniList
 # data_dir = "~/.cache/anilist-recommender"
-# ollama_model = "llama3.1:8b"
+# llm_base_url = "http://127.0.0.1:8080/v1"
+# llm_model = "llama3.1:8b"
 # embedding_model = "intfloat/multilingual-e5-small"
 # max_graph_sources = 60
 # title_language = "english"       # english | romaji | native (japonais)
@@ -163,8 +168,8 @@ Les variables d'environnement restent disponibles pour surcharger ponctuellement
 |---|---|---|
 | `ANILIST_USERNAME` | — | Nom d'utilisateur AniList |
 | `ANILIST_DATA_DIR` | `~/.cache/anilist-recommender/` | Dossier contenant `anilist_local.db` + `taste_profile.json` (régénérable via `sync`) |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Endpoint OpenAI-compatible d'Ollama |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Modèle LLM (doit supporter le tool calling) |
+| `LLM_BASE_URL` | `http://localhost:11434/v1` | Endpoint OpenAI-compatible (Ollama par défaut ; `http://127.0.0.1:8080/v1` pour llama-server) |
+| `LLM_MODEL` | `llama3.1:8b` | Modèle LLM (doit supporter le tool calling) — alias du serveur |
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Modèle d'embeddings CPU (`BAAI/bge-m3` possible) |
 | `ANILIST_MAX_GRAPH_SOURCES` | `60` | Nombre d'œuvres (triées par \|poids\|) dont on tire le graphe collaboratif |
 | `ANILIST_REQUEST_INTERVAL` | `0.85` | Cadence **initiale** entre deux requêtes (s). Elle s'**auto-adapte** : chaque 429 la ralentit (×1,5, plafond 6 s) pour converger vers le vrai plafond d'AniList au lieu de le percuter ; le quota est aussi piloté par les headers `X-RateLimit-*` |
@@ -229,7 +234,7 @@ anilist-recommender/
 ├── README.md
 ├── data/                      # (optionnel) gitignoré ; par défaut la base vit dans ~/.cache/anilist-recommender/
 └── src/anilist_recommender/
-    ├── config.py              # chemins, URL Ollama, modèle LLM, réglages
+    ├── config.py              # chemins, URL LLM, modèle LLM, réglages
     ├── graphql_client.py      # extraction AniList + rate-limit
     ├── db.py                  # schéma SQLite + media_relations + sqlite-vec + requêtes
     ├── scoring.py             # Z-scores, GraphScore, gatekeeping, taste_profile.json

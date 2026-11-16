@@ -1,5 +1,5 @@
 {
-  description = "anilist-recommender — local AniList anime/manga recommendation CLI (Ollama + sqlite-vec + sentence-transformers on CPU)";
+  description = "anilist-recommender — local AniList anime/manga recommendation CLI (local LLM + sqlite-vec + sentence-transformers on CPU)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -39,7 +39,7 @@
             ];
 
             meta = {
-              description = "Local AniList anime/manga recommender (Ollama + sqlite-vec)";
+              description = "Local AniList anime/manga recommender (local LLM + sqlite-vec)";
               mainProgram = "anilist-rec";
               license = nixpkgs.lib.licenses.mit;
             };
@@ -67,7 +67,7 @@
               uv          # Python package manager (resolves & installs the venv)
               sqlite      # sqlite3 CLI for inspecting data/anilist_local.db
               python313   # interpreter used by uv to build the .venv
-              curl        # handy for smoke-testing the Ollama endpoint
+              curl        # handy for smoke-testing the LLM endpoint
             ];
 
             shellHook = ''

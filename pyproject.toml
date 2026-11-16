@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "anilist-recommender"
 version = "0.1.0"
-description = "Local CLI that recommends anime & manga from your AniList profile using the collaborative recommendation graph, local CPU vector search (sqlite-vec) and a local Ollama LLM."
+description = "Local CLI that recommends anime & manga from your AniList profile using the collaborative recommendation graph, local CPU vector search (sqlite-vec) and a local LLM (Ollama or llama-server / llama.cpp)."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
